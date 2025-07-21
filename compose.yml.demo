@@ -1,0 +1,7 @@
+services:
+  announce-bot:
+    build: .
+    container_name: announce-bot
+    env_file:
+      - .env
+    restart: unless-stopped 
