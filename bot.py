@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP = range(9)
 
 STEP_TO_NAME = {
-    ASK_DATE_TIME: 'Редактировать дату',
-    ASK_KOMOOT_LINK: 'Заменить Komoot',
-    ASK_ROUTE_NAME: 'Редактировать название маршрута',
-    ASK_START_POINT: 'Заменить точку старта',
-    ASK_PACE: 'Редактировать темп',
-    ASK_COMMENT: 'Редактировать комментарий',
+    ASK_DATE_TIME: '✏️ дату',
+    ASK_KOMOOT_LINK: '✏️ ссылку Komoot',
+    ASK_ROUTE_NAME: '✏️ название',
+    ASK_START_POINT: '✏️ старт',
+    ASK_PACE: '✏️ темп',
+    ASK_COMMENT: '✏️ коммен.',
 }
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
