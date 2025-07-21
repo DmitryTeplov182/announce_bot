@@ -20,7 +20,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT = range(8)
+ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP = range(9)
+
+STEP_TO_NAME = {
+    ASK_DATE_TIME: 'Редактировать дату',
+    ASK_KOMOOT_LINK: 'Заменить Komoot',
+    ASK_ROUTE_NAME: 'Редактировать название маршрута',
+    ASK_START_POINT: 'Заменить точку старта',
+    ASK_PACE: 'Редактировать темп',
+    ASK_COMMENT: 'Редактировать комментарий',
+}
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
 
@@ -81,6 +90,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем дату и время в user_data
     context.user_data['date_time'] = update.message.text.strip()
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
     await update.message.reply_text(
         'Теперь пришли публичную ссылку на маршрут Komoot (например: https://www.komoot.com/tour/1234567890):'
     )
@@ -96,6 +108,9 @@ async def ask_komoot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_KOMOOT_LINK
     context.user_data['komoot_link'] = text
     context.user_data['tour_id'] = match.group(3)
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
     await update.message.reply_text('Скачиваю маршрут и извлекаю данные...')
     # Переходим к обработке GPX
     return await process_gpx(update, context)
@@ -135,6 +150,9 @@ async def process_gpx(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_route_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['route_name'] = update.message.text.strip()
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
     # Кнопки для выбора точки старта
     keyboard = [[p['name']] for p in START_POINTS]
     await update.message.reply_text(
@@ -157,6 +175,9 @@ async def ask_start_point(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['start_point_name'] = point['name']
         context.user_data['start_point_link'] = point['link']
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
         keyboard = [[p] for p in PACE_OPTIONS]
         await update.message.reply_text(
             'Выбери ожидаемый темп (количество лун):',
@@ -176,6 +197,9 @@ async def ask_start_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('Пожалуйста, пришли корректную ссылку на Google Maps (начинается с http...)')
             return ASK_START_LINK
         context.user_data['start_point_link'] = link
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
         keyboard = [[p] for p in PACE_OPTIONS]
         await update.message.reply_text(
             'Выбери ожидаемый темп (количество лун):',
@@ -189,6 +213,9 @@ async def ask_pace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('Пожалуйста, выбери темп из предложенных вариантов.')
         return ASK_PACE
     context.user_data['pace'] = pace
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
     await update.message.reply_text(
         'Теперь напиши комментарий к анонсу (можно несколько строк):',
         reply_markup=ReplyKeyboardRemove()
@@ -198,8 +225,14 @@ async def ask_pace(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     comment = update.message.text.strip()
     context.user_data['comment'] = comment
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
+    return await preview_step(update, context)
+
+async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Формируем анонс
-    date_time_str = context.user_data['date_time']
+    date_time_str = context.user_data.get('date_time', '-')
     dt = parse_date_time(date_time_str)
     if dt:
         weekday = RU_WEEKDAYS[dt.weekday()]
@@ -211,17 +244,16 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_of_day = 'время суток?'
         date_part = date_time_str
         time_part = ''
-    komoot_link = context.user_data['komoot_link']
-    route_name = context.user_data['route_name']
-    start_point_name = context.user_data['start_point_name']
-    start_point_link = context.user_data['start_point_link']
-    length_km = context.user_data['length_km']
-    uphill = context.user_data['uphill']
-    pace = context.user_data['pace']
-    comment = context.user_data['comment']
-    gpx_path = context.user_data['gpx_path']
-    pace_emoji = pace.split(' ')[0]
-    # Формируем текст анонса с markdown-ссылками
+    komoot_link = context.user_data.get('komoot_link', '-')
+    route_name = context.user_data.get('route_name', '-')
+    start_point_name = context.user_data.get('start_point_name', '-')
+    start_point_link = context.user_data.get('start_point_link', '-')
+    length_km = context.user_data.get('length_km', '-')
+    uphill = context.user_data.get('uphill', '-')
+    pace = context.user_data.get('pace', '-')
+    comment = context.user_data.get('comment', '-')
+    gpx_path = context.user_data.get('gpx_path', None)
+    pace_emoji = pace.split(' ')[0] if pace else '-'
     announce = (
         f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
         f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м комут ([ссылка]({komoot_link}))\n\n"
@@ -230,10 +262,84 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n"
         f"{comment}"
     )
-    await update.message.reply_text(announce, parse_mode='Markdown')
-    with open(gpx_path, 'rb') as f:
-        await update.message.reply_document(f, filename=os.path.basename(gpx_path))
-    return ConversationHandler.END
+    # Кнопки предпросмотра
+    buttons = [["Отправить"]]
+    for step, name in STEP_TO_NAME.items():
+        buttons.append([name])
+    await update.message.reply_text(
+        announce + '\n\nВсё верно?',
+        parse_mode='Markdown',
+        reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True),
+        disable_web_page_preview=True
+    )
+    return PREVIEW_STEP
+
+async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    # Отправить — публикуем анонс и GPX
+    if text == 'Отправить':
+        # Формируем анонс (тот же код, что в preview_step)
+        date_time_str = context.user_data.get('date_time', '-')
+        dt = parse_date_time(date_time_str)
+        if dt:
+            weekday = RU_WEEKDAYS[dt.weekday()]
+            time_of_day = get_time_of_day(dt)
+            date_part = dt.strftime('%d.%m')
+            time_part = dt.strftime('%H:%M')
+        else:
+            weekday = 'День недели?'
+            time_of_day = 'время суток?'
+            date_part = date_time_str
+            time_part = ''
+        komoot_link = context.user_data.get('komoot_link', '-')
+        route_name = context.user_data.get('route_name', '-')
+        start_point_name = context.user_data.get('start_point_name', '-')
+        start_point_link = context.user_data.get('start_point_link', '-')
+        length_km = context.user_data.get('length_km', '-')
+        uphill = context.user_data.get('uphill', '-')
+        pace = context.user_data.get('pace', '-')
+        comment = context.user_data.get('comment', '-')
+        gpx_path = context.user_data.get('gpx_path', None)
+        pace_emoji = pace.split(' ')[0] if pace else '-'
+        announce = (
+            f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
+            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м комут ([ссылка]({komoot_link}))\n\n"
+            f"Старт: [{start_point_name}]({start_point_link}), выезд в {time_part}\n"
+            f"Ожидаемый темп: {pace_emoji}\n"
+            f"\n"
+            f"{comment}"
+        )
+        await update.message.reply_text(announce, parse_mode='Markdown', disable_web_page_preview=True)
+        if gpx_path:
+            with open(gpx_path, 'rb') as f:
+                await update.message.reply_document(f, filename=os.path.basename(gpx_path))
+        return ConversationHandler.END
+    # Если выбрана кнопка редактирования — возвращаем на нужный этап
+    for step, name in STEP_TO_NAME.items():
+        if text == name:
+            context.user_data['edit_mode'] = True
+            if step == ASK_DATE_TIME:
+                await update.message.reply_text('Укажи дату и время старта:', reply_markup=ReplyKeyboardRemove())
+                return ASK_DATE_TIME
+            elif step == ASK_KOMOOT_LINK:
+                await update.message.reply_text('Пришли публичную ссылку на маршрут Komoot:', reply_markup=ReplyKeyboardRemove())
+                return ASK_KOMOOT_LINK
+            elif step == ASK_ROUTE_NAME:
+                await update.message.reply_text('Введи название маршрута:', reply_markup=ReplyKeyboardRemove())
+                return ASK_ROUTE_NAME
+            elif step == ASK_START_POINT:
+                keyboard = [[p['name']] for p in START_POINTS]
+                await update.message.reply_text('Выбери точку старта:', reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
+                return ASK_START_POINT
+            elif step == ASK_PACE:
+                keyboard = [[p] for p in PACE_OPTIONS]
+                await update.message.reply_text('Выбери ожидаемый темп (количество лун):', reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
+                return ASK_PACE
+            elif step == ASK_COMMENT:
+                await update.message.reply_text('Введи комментарий:', reply_markup=ReplyKeyboardRemove())
+                return ASK_COMMENT
+    # Если что-то другое — повторяем предпросмотр
+    return await preview_step(update, context)
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -247,6 +353,7 @@ if __name__ == '__main__':
             ASK_START_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_link)],
             ASK_PACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_pace)],
             ASK_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comment)],
+            PREVIEW_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_handler)],
         },
         fallbacks=[],
     )
