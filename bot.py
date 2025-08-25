@@ -177,7 +177,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f'• /help - показать справку\n'
         f'• /cancel - отменить создание\n'
         f'• /restart - сбросить состояние\n\n'
-        f'Давай начнем! Укажи дату и время старта (например: <code>{date_example} 10:00</code>)',
+        f'<b>Давай начнем!</b>\n\n'
+        f'Укажи дату и время старта (например: <code>{date_example} 10:00</code>)',
         parse_mode='HTML'
     )
     return ASK_DATE_TIME
@@ -249,7 +250,8 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(
         '✅ Дата и время приняты!\n\n'
-        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot (например: https://www.komoot.com/tour/2526993761):'
+        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot (например: https://www.komoot.com/tour/2526993761):',
+        parse_mode='HTML'
     )
     return ASK_KOMOOT_LINK
 
