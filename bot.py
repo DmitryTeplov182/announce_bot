@@ -730,6 +730,16 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if gpx_path:
             with open(gpx_path, 'rb') as f:
                 await update.message.reply_document(f, filename=os.path.basename(gpx_path))
+        
+        # Отправляем финальное сообщение
+        await update.message.reply_text(
+            "✅ <b>Анонс создан, можешь переслать его друзьям.</b>\n\n"
+            "🚴‍♂️ <b>Хорошей покатушки!</b>\n\n"
+            "Используй /start для создания нового анонса.",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
         return ConversationHandler.END
     # Если выбрана кнопка редактирования — возвращаем на нужный этап
     for step, name in STEP_TO_NAME.items():
