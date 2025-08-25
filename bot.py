@@ -5,7 +5,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 )
 import logging
-import subprocess
+import asyncio
 import glob
 import gpxpy
 import gpxpy.gpx
@@ -117,24 +117,55 @@ async def ask_komoot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_gpx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tour_id = context.user_data['tour_id']
+    logger.info(f"Начинаю скачивание GPX для tour_id: {tour_id}")
+    
     try:
-        subprocess.run([
+        # Используем асинхронный subprocess
+        process = await asyncio.create_subprocess_exec(
             'komootgpx',
             '-d', tour_id,
             '-o', CACHE_DIR,
             '-e',
-            '-n'
-        ], check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        await update.message.reply_text('Ошибка при скачивании GPX. Проверь, что маршрут публичный или попробуй другую ссылку.')
-        await update.message.reply_text('Пришли другую публичную ссылку на маршрут Komoot:')
+            '-n',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        logger.info(f"Процесс komootgpx запущен с PID: {process.pid}")
+        
+        # Ждем завершения с таймаутом
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+            logger.info(f"Процесс komootgpx завершен с кодом: {process.returncode}")
+        except asyncio.TimeoutError:
+            # Если процесс завис, убиваем его
+            logger.warning(f"Процесс komootgpx завис, убиваю PID: {process.pid}")
+            process.kill()
+            await update.message.reply_text('Превышено время ожидания при скачивании GPX. Попробуй другую ссылку на маршрут Komoot:')
+            return ASK_KOMOOT_LINK
+            
+        if process.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
+            logger.error(f"Ошибка komootgpx: {error_msg}")
+            await update.message.reply_text(f'Ошибка при скачивании GPX: {error_msg}. Попробуй другую ссылку на маршрут Komoot:')
+            return ASK_KOMOOT_LINK
+            
+    except Exception as e:
+        logger.error(f"Исключение при скачивании GPX: {str(e)}", exc_info=True)
+        await update.message.reply_text(f'Ошибка при скачивании GPX: {str(e)}. Попробуй другую ссылку на маршрут Komoot:')
         return ASK_KOMOOT_LINK
+        
+    # Проверяем, что файл действительно скачался
     gpx_files = glob.glob(f"{CACHE_DIR}/*-{tour_id}.gpx")
     if not gpx_files:
+        logger.warning(f"GPX файл не найден для tour_id: {tour_id}")
         await update.message.reply_text('GPX-файл не найден. Попробуй другую ссылку на маршрут Komoot:')
         return ASK_KOMOOT_LINK
+        
     gpx_path = gpx_files[0]
+    logger.info(f"GPX файл найден: {gpx_path}")
     context.user_data['gpx_path'] = gpx_path
+    
     try:
         with open(gpx_path, 'r') as f:
             gpx = gpxpy.parse(f)
@@ -142,9 +173,12 @@ async def process_gpx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uphill = gpx.get_uphill_downhill()[0]
         context.user_data['length_km'] = round(length_km)
         context.user_data['uphill'] = round(uphill)
+        logger.info(f"GPX обработан: длина {length_km} км, набор {uphill} м")
     except Exception as e:
+        logger.error(f"Ошибка при обработке GPX файла: {str(e)}", exc_info=True)
         await update.message.reply_text('Ошибка при обработке GPX-файла. Попробуй другую ссылку на маршрут Komoot:')
         return ASK_KOMOOT_LINK
+        
     await update.message.reply_text('Введи название маршрута (например: Шайкаш - Чуруг - Србобран - Темерин):')
     return ASK_ROUTE_NAME
 
@@ -256,7 +290,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pace_emoji = pace.split(' ')[0] if pace else '-'
     announce = (
         f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
-        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м комут ([ссылка]({komoot_link}))\n\n"
+        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м ([комут]({komoot_link}))\n\n"
         f"Старт: [{start_point_name}]({start_point_link}), выезд в {time_part}\n"
         f"Ожидаемый темп: {pace_emoji}\n"
         f"\n"
@@ -303,7 +337,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pace_emoji = pace.split(' ')[0] if pace else '-'
         announce = (
             f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
-            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м комут ([ссылка]({komoot_link}))\n\n"
+            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м ([комут]({komoot_link}))\n\n"
             f"Старт: [{start_point_name}]({start_point_link}), выезд в {time_part}\n"
             f"Ожидаемый темп: {pace_emoji}\n"
             f"\n"
@@ -341,8 +375,46 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если что-то другое — повторяем предпросмотр
     return await preview_step(update, context)
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для проверки статуса бота"""
+    cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
+    cache_size = len(cache_files)
+    
+    status_text = f"🤖 **Статус бота**\n\n"
+    status_text += f"📁 Файлов в кэше: {cache_size}\n"
+    status_text += f"💾 Размер кэша: {sum(os.path.getsize(f) for f in cache_files) / 1024:.1f} KB\n"
+    status_text += f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}\n"
+    
+    if cache_size > 10:
+        status_text += "\n⚠️ Много файлов в кэше! Используй /clear_cache"
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для очистки кэша"""
+    try:
+        cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
+        for file_path in cache_files:
+            try:
+                os.remove(file_path)
+                logger.info(f"Удален файл кэша: {file_path}")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении {file_path}: {e}")
+        
+        deleted_count = len(cache_files)
+        await update.message.reply_text(f"🗑️ Кэш очищен! Удалено файлов: {deleted_count}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при очистке кэша: {e}")
+        await update.message.reply_text(f"❌ Ошибка при очистке кэша: {str(e)}")
+
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Добавляем команды статуса и очистки кэша
+    app.add_handler(CommandHandler('status', status_command))
+    app.add_handler(CommandHandler('clear_cache', clear_cache_command))
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
