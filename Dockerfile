@@ -10,9 +10,15 @@ WORKDIR /app
 # Копируем файлы проекта
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
 
-# Переменная окружения для python-dotenv (опционально)
+# Копируем только необходимые файлы (исключаем start_locations.json)
+COPY bot.py ./
+COPY .env.example ./
+
+# Создаем директорию для кэша
+RUN mkdir -p /app/cache
+
+# Переменная окружения для python-dotenv
 ENV PYTHONUNBUFFERED=1
 
 # Запуск бота

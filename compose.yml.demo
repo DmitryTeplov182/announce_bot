@@ -4,4 +4,9 @@ services:
     container_name: announce-bot
     env_file:
       - .env
-    restart: unless-stopped 
+    volumes:
+      # Монтируем файл с точками старта для возможности редактирования
+      - ./start_locations.json:/app/start_locations.json:ro
+      # Монтируем кэш для сохранения GPX файлов между перезапусками
+      - ./cache:/app/cache
+    restart: always 

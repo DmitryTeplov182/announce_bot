@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -38,14 +39,86 @@ KOMOOT_LINK_PATTERN = re.compile(r'(https?://)?(www\.)?komoot\.[^/]+/tour/(\d+)'
 CACHE_DIR = 'cache'
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+def load_start_points():
+    """Загружает точки старта из JSON файла"""
+    try:
+        with open('start_locations.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            start_points = data.get('start_points', [])
+            
+            # Автоматически добавляем "Свою точку" в конец списка
+            start_points.append({
+                'name': 'Своя точка',
+                'link': None
+            })
+            
+            return start_points
+            
+    except FileNotFoundError:
+        logger.warning("Файл start_locations.json не найден, используем точки по умолчанию")
+        default_points = [
+            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
+            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
+            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
+            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
+            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
+        ]
+        
+        # Добавляем "Свою точку" и к точкам по умолчанию
+        default_points.append({
+            'name': 'Своя точка',
+            'link': None
+        })
+        
+        return default_points
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка при парсинге start_locations.json: {e}")
+        default_points = [
+            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
+            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
+            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
+            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
+            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
+        ]
+        
+        # Добавляем "Свою точку" и к точкам по умолчанию
+        default_points.append({
+            'name': 'Своя точка',
+            'link': None
+        })
+        
+        return default_points
+        
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при загрузке точек старта: {e}")
+        default_points = [
+            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
+            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
+            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
+            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
+            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
+        ]
+        
+        # Добавляем "Свою точку" и к точкам по умолчанию
+        default_points.append({
+            'name': 'Своя точка',
+            'link': None
+        })
+        
+        return default_points
+
+# Загружаем точки старта при импорте модуля
+START_POINTS = load_start_points()
+
 # Предустановленные точки старта (заполнишь потом)
-START_POINTS = [
-    {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
-    {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
-    {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
-    {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
-    {'name': 'Своя точка', 'link': None},
-]
+# START_POINTS = [
+#     {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
+#     {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
+#     {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
+#     {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
+#     {'name': 'Своя точка', 'link': None},
+# ]
 
 PACE_OPTIONS = [
     '🌝🌚🌚',
@@ -67,34 +140,116 @@ def get_time_of_day(dt: datetime) -> str:
     else:
         return 'вечер'
 
-def parse_date_time(date_time_str: str) -> datetime:
-    # Ожидается формат: 19.07 10:00
+def parse_date_time(date_time_str: str) -> tuple[datetime, str]:
+    """
+    Парсит строку даты и времени, возвращает (datetime, error_message)
+    Ожидается формат: 19.07 10:00
+    """
     try:
         dt = datetime.strptime(date_time_str, '%d.%m %H:%M')
         # Подставляем текущий год
         dt = dt.replace(year=datetime.now().year)
-        return dt
-    except Exception:
-        return None
+        
+        # Проверяем, что дата не в прошлом
+        now = datetime.now()
+        if dt < now:
+            return None, "❌ <b>Указанная дата уже прошла!</b> Укажи будущую дату."
+        
+        # Проверяем, что дата не слишком далеко в будущем (больше года)
+        if dt > now + timedelta(days=365):
+            return None, "❌ <b>Дата слишком далеко в будущем!</b> Укажи дату в пределах года."
+            
+        return dt, None
+        
+    except ValueError:
+        return None, "❌ <b>Неверный формат даты!</b> Используй формат: ДД.ММ ЧЧ:ММ (например: 19.07 10:00)"
+    except Exception as e:
+        return None, f"❌ <b>Ошибка при обработке даты:</b> {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tomorrow = datetime.now() + timedelta(days=1)
     date_example = tomorrow.strftime('%d.%m')
     await update.message.reply_text(
-        f'Привет! Давай создадим анонс поездки.\n\n'
-        f'Сначала укажи дату и время старта (например: `{date_example} 10:00`)',
-        parse_mode='Markdown'
+        f'🚴‍♂️ <b>Привет! Я бот для создания анонсов велопоездок</b>\n\n'
+        f'Создам красивый анонс с маршрутом, точкой старта и всеми деталями.\n\n'
+        f'<b>Основные команды:</b>\n'
+        f'• /start - создать новый анонс\n'
+        f'• /help - показать справку\n'
+        f'• /cancel - отменить создание\n'
+        f'• /restart - сбросить состояние\n\n'
+        f'Давай начнем! Укажи дату и время старта (например: <code>{date_example} 10:00</code>)',
+        parse_mode='HTML'
     )
     return ASK_DATE_TIME
 
+async def reload_locations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для перезагрузки точек старта из файла"""
+    try:
+        global START_POINTS
+        START_POINTS = load_start_points()
+        points_count = len(START_POINTS)
+        await update.message.reply_text(
+            f"🔄 Точки старта перезагружены!\n\n"
+            f"📍 Загружено точек: {points_count}\n"
+            f"📝 Список: {', '.join([p['name'] for p in START_POINTS])}"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при перезагрузке точек старта: {e}")
+        await update.message.reply_text(f"❌ Ошибка при перезагрузке: {str(e)}")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда помощи"""
+    help_text = (
+        "🚴‍♂️ <b>Справка по боту</b>\n\n"
+        "<b>Как создать анонс:</b>\n"
+        "1. Укажи дату и время старта (формат: ДД.ММ ЧЧ:ММ)\n"
+        "2. Пришли ссылку на маршрут Komoot\n"
+        "3. Введи название маршрута\n"
+        "4. Выбери точку старта\n"
+        "5. Укажи ожидаемый темп (количество лун)\n"
+        "6. Добавь комментарий\n"
+        "7. Проверь и отправь анонс\n\n"
+        "<b>Основные команды:</b>\n"
+        "• /start - создать новый анонс\n"
+        "• /help - эта справка\n"
+        "• /cancel - отменить создание\n"
+        "• /restart - сбросить состояние\n\n"
+        "<b>Точки старта:</b>\n"
+        "• koferajd, Флаги, Лидл Лиман, Железничка Парк\n"
+        "• Или укажи свою точку\n\n"
+        "<b>Формат даты:</b> ДД.ММ ЧЧ:ММ (например: 19.07 10:00)"
+    )
+    await update.message.reply_text(help_text, parse_mode='HTML')
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для отмены создания анонса"""
+    await update.message.reply_text(
+        "❌ Создание анонса отменено.\n\n"
+        "Используй /start для создания нового анонса.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
 async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем дату и время в user_data
-    context.user_data['date_time'] = update.message.text.strip()
+    date_time_str = update.message.text.strip()
+    
+    # Валидируем дату
+    dt, error_msg = parse_date_time(date_time_str)
+    if error_msg:
+        await update.message.reply_text(error_msg)
+        return ASK_DATE_TIME
+    
+    context.user_data['date_time'] = date_time_str
+    context.user_data['parsed_datetime'] = dt  # Сохраняем распарсенную дату
+    
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
+        
     await update.message.reply_text(
-        'Теперь пришли публичную ссылку на маршрут Komoot (например: https://www.komoot.com/tour/1234567890):'
+        '✅ Дата и время приняты!\n\n'
+        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot (например: https://www.komoot.com/tour/2526993761):'
     )
     return ASK_KOMOOT_LINK
 
@@ -267,7 +422,7 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Формируем анонс
     date_time_str = context.user_data.get('date_time', '-')
-    dt = parse_date_time(date_time_str)
+    dt, error_msg = parse_date_time(date_time_str)
     if dt:
         weekday = RU_WEEKDAYS[dt.weekday()]
         time_of_day = get_time_of_day(dt)
@@ -278,6 +433,9 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_of_day = 'время суток?'
         date_part = date_time_str
         time_part = ''
+        if error_msg:
+            await update.message.reply_text(error_msg, parse_mode='HTML')
+            return ASK_DATE_TIME # Вернуться к запросу даты
     komoot_link = context.user_data.get('komoot_link', '-')
     route_name = context.user_data.get('route_name', '-')
     start_point_name = context.user_data.get('start_point_name', '-')
@@ -289,9 +447,9 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gpx_path = context.user_data.get('gpx_path', None)
     pace_emoji = pace.split(' ')[0] if pace else '-'
     announce = (
-        f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
-        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м ([комут]({komoot_link}))\n\n"
-        f"Старт: [{start_point_name}]({start_point_link}), выезд в {time_part}\n"
+        f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>\n"
+        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)\n\n"
+        f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
         f"Ожидаемый темп: {pace_emoji}\n"
         f"\n"
         f"{comment}"
@@ -302,7 +460,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([name])
     await update.message.reply_text(
         announce + '\n\nВсё верно?',
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True),
         disable_web_page_preview=True
     )
@@ -314,7 +472,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == 'Отправить':
         # Формируем анонс (тот же код, что в preview_step)
         date_time_str = context.user_data.get('date_time', '-')
-        dt = parse_date_time(date_time_str)
+        dt, error_msg = parse_date_time(date_time_str)
         if dt:
             weekday = RU_WEEKDAYS[dt.weekday()]
             time_of_day = get_time_of_day(dt)
@@ -325,6 +483,9 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_of_day = 'время суток?'
             date_part = date_time_str
             time_part = ''
+            if error_msg:
+                await update.message.reply_text(error_msg, parse_mode='HTML')
+                return ASK_DATE_TIME # Вернуться к запросу даты
         komoot_link = context.user_data.get('komoot_link', '-')
         route_name = context.user_data.get('route_name', '-')
         start_point_name = context.user_data.get('start_point_name', '-')
@@ -336,14 +497,14 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gpx_path = context.user_data.get('gpx_path', None)
         pace_emoji = pace.split(' ')[0] if pace else '-'
         announce = (
-            f"**{weekday}, {date_part}, {time_of_day} ({time_part})**\n"
-            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м ([комут]({komoot_link}))\n\n"
-            f"Старт: [{start_point_name}]({start_point_link}), выезд в {time_part}\n"
+            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>\n"
+            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)\n\n"
+            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
             f"Ожидаемый темп: {pace_emoji}\n"
             f"\n"
             f"{comment}"
         )
-        await update.message.reply_text(announce, parse_mode='Markdown', disable_web_page_preview=True)
+        await update.message.reply_text(announce, parse_mode='HTML', disable_web_page_preview=True)
         if gpx_path:
             with open(gpx_path, 'rb') as f:
                 await update.message.reply_document(f, filename=os.path.basename(gpx_path))
@@ -375,45 +536,104 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если что-то другое — повторяем предпросмотр
     return await preview_step(update, context)
 
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для сброса состояния и начала заново"""
+    # Очищаем все данные пользователя
+    context.user_data.clear()
+    await update.message.reply_text(
+        "�� Состояние сброшено! Начинаем заново.\n\n"
+        "Используй /start для создания нового анонса.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для проверки статуса бота"""
     cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
     cache_size = len(cache_files)
     
-    status_text = f"🤖 **Статус бота**\n\n"
+    # Проверяем размер кэша
+    total_size = 0
+    if cache_files:
+        total_size = sum(os.path.getsize(f) for f in cache_files)
+    
+    status_text = f"🤖 <b>Статус бота</b>\n\n"
     status_text += f"📁 Файлов в кэше: {cache_size}\n"
-    status_text += f"💾 Размер кэша: {sum(os.path.getsize(f) for f in cache_files) / 1024:.1f} KB\n"
+    status_text += f"💾 Размер кэша: {total_size / 1024:.1f} KB\n"
     status_text += f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}\n"
+    status_text += f"📅 Дата: {datetime.now().strftime('%d.%m.%Y')}\n"
     
     if cache_size > 10:
         status_text += "\n⚠️ Много файлов в кэше! Используй /clear_cache"
+    elif cache_size == 0:
+        status_text += "\n✅ Кэш пуст"
+    else:
+        status_text += f"\n✅ Кэш в порядке ({cache_size} файлов)"
     
-    await update.message.reply_text(status_text, parse_mode='Markdown')
+    await update.message.reply_text(status_text, parse_mode='HTML')
+
+def cleanup_old_gpx_files():
+    """Автоматически очищает GPX файлы старше 7 дней"""
+    try:
+        current_time = datetime.now()
+        cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
+        deleted_count = 0
+        
+        for file_path in cache_files:
+            try:
+                file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                if (current_time - file_time).days > 7:
+                    os.remove(file_path)
+                    logger.info(f"Автоматически удален старый файл: {file_path}")
+                    deleted_count += 1
+            except Exception as e:
+                logger.error(f"Ошибка при проверке файла {file_path}: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"Автоматически очищено {deleted_count} старых GPX файлов")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при автоматической очистке: {e}")
 
 async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для очистки кэша"""
     try:
+        # Сначала очищаем старые файлы
+        cleanup_old_gpx_files()
+        
         cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
+        deleted_count = 0
+        
         for file_path in cache_files:
             try:
                 os.remove(file_path)
                 logger.info(f"Удален файл кэша: {file_path}")
+                deleted_count += 1
             except Exception as e:
                 logger.error(f"Ошибка при удалении {file_path}: {e}")
         
-        deleted_count = len(cache_files)
-        await update.message.reply_text(f"🗑️ Кэш очищен! Удалено файлов: {deleted_count}")
+        if deleted_count == 0:
+            await update.message.reply_text("🗑️ Кэш уже пуст!")
+        else:
+            await update.message.reply_text(f"🗑️ Кэш очищен! Удалено файлов: {deleted_count}")
         
     except Exception as e:
         logger.error(f"Ошибка при очистке кэша: {e}")
         await update.message.reply_text(f"❌ Ошибка при очистке кэша: {str(e)}")
 
 if __name__ == '__main__':
+    # Автоматически очищаем старые GPX файлы при запуске
+    cleanup_old_gpx_files()
+    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     # Добавляем команды статуса и очистки кэша
     app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('clear_cache', clear_cache_command))
+    app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('cancel', cancel_command))
+    app.add_handler(CommandHandler('restart', restart_command)) # Добавляем команду restart
+    app.add_handler(CommandHandler('reload_locations', reload_locations_command)) # Добавляем команду reload_locations
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -427,7 +647,7 @@ if __name__ == '__main__':
             ASK_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comment)],
             PREVIEW_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_handler)],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler('cancel', cancel_command)],
     )
     app.add_handler(conv_handler)
     print('Bot started...')

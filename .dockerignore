@@ -1,0 +1,23 @@
+# Кэш и временные файлы
+cache/
+*.gpx
+logs/
+
+# Конфигурационные файлы
+start_locations.json
+.env
+compose.yml
+compose.yml.demo
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Git
+.git/
+
+# Документация (не нужна в образе)
+README.md
+LICENSE
+.env
