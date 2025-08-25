@@ -11,9 +11,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем только необходимые файлы (исключаем start_locations.json)
-COPY bot.py ./
-COPY .env.example ./
+# Копируем все файлы (исключения в .dockerignore)
+COPY . .
 
 # Создаем директорию для кэша
 RUN mkdir -p /app/cache
