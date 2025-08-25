@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP = range(9)
 
 STEP_TO_NAME = {
-    ASK_DATE_TIME: '✏️ дату',
-    ASK_KOMOOT_LINK: '✏️ ссылку Komoot',
-    ASK_ROUTE_NAME: '✏️ название',
-    ASK_START_POINT: '✏️ старт',
-    ASK_PACE: '✏️ темп',
-    ASK_COMMENT: '✏️ коммен.',
+    ASK_DATE_TIME: '✏️ Изм. дату',
+    ASK_KOMOOT_LINK: '✏️ Изм. ссылку Komoot',
+    ASK_ROUTE_NAME: '✏️ Изм. название',
+    ASK_START_POINT: '✏️ Изм. старт',
+    ASK_PACE: '✏️ Изм. темп',
+    ASK_COMMENT: '✏️ Изм. коммен.',
 }
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
@@ -457,7 +457,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{comment}"
     )
     # Кнопки предпросмотра
-    buttons = [["Отправить"]]
+    buttons = [["✅ Отправить"]]
     for step, name in STEP_TO_NAME.items():
         buttons.append([name])
     await update.message.reply_text(
