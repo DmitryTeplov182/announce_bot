@@ -471,7 +471,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     # Отправить — публикуем анонс и GPX
-    if text == 'Отправить':
+    if text == '✅ Отправить':
         # Формируем анонс (тот же код, что в preview_step)
         date_time_str = context.user_data.get('date_time', '-')
         dt, error_msg = parse_date_time(date_time_str)
