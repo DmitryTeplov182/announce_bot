@@ -967,7 +967,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('clear_cache', clear_cache_command))
     app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('restart', restart_command)) # Добавляем команду restart
 
 
     
