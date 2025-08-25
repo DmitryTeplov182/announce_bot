@@ -543,7 +543,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Очищаем все данные пользователя
     context.user_data.clear()
     await update.message.reply_text(
-        "�� Состояние сброшено! Начинаем заново.\n\n"
+        "Состояние сброшено! Начинаем заново.\n\n"
         "Используй /start для создания нового анонса.",
         reply_markup=ReplyKeyboardRemove()
     )
