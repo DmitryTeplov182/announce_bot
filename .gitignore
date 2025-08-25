@@ -2,3 +2,4 @@
 compose.yml
 cache/*.gpx
 Makefile
+__pycache__/

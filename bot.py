@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP = range(9)
+ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP, SELECT_ROUTE = range(10)
 
 STEP_TO_NAME = {
     ASK_DATE_TIME: '✏️ Изм. дату',
@@ -42,7 +42,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 def load_start_points():
     """Загружает точки старта из JSON файла"""
     try:
-        with open('start_locations.json', 'r', encoding='utf-8') as f:
+        with open('start_points.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
             start_points = data.get('start_points', [])
             
@@ -55,7 +55,7 @@ def load_start_points():
             return start_points
             
     except FileNotFoundError:
-        logger.warning("Файл start_locations.json не найден, используем точки по умолчанию")
+        logger.warning("Файл start_points.json не найден, используем точки по умолчанию")
         default_points = [
             {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
             {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
@@ -73,7 +73,7 @@ def load_start_points():
         return default_points
         
     except json.JSONDecodeError as e:
-        logger.error(f"Ошибка при парсинге start_locations.json: {e}")
+        logger.error(f"Ошибка при парсинге start_points.json: {e}")
         default_points = [
             {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
             {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
@@ -166,37 +166,191 @@ def parse_date_time(date_time_str: str) -> tuple[datetime, str]:
     except Exception as e:
         return None, f"❌ <b>Ошибка при обработке даты:</b> {str(e)}"
 
+def load_ready_routes():
+    """Загружает готовые маршруты из JSON файла"""
+    try:
+        with open('ready_routes.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            routes = data.get('ready_routes', [])
+            logger.info(f"Загружено готовых маршрутов: {len(routes)}")
+            for i, route in enumerate(routes):
+                logger.info(f"Маршрут {i+1}: {route['name']} -> {route['start_point']}")
+            return routes
+    except FileNotFoundError:
+        logger.warning("Файл ready_routes.json не найден")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка при парсинге ready_routes.json: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при загрузке готовых маршрутов: {e}")
+        return []
+
+# Загружаем готовые маршруты при импорте модуля
+READY_ROUTES = load_ready_routes()
+
+def load_route_comments():
+    """Загружает готовые ссылки на маршруты из JSON файла"""
+    try:
+        with open('routes.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            routes = data.get('routes', [])
+            logger.info(f"Загружено готовых ссылок на маршруты: {len(routes)}")
+            return routes
+    except FileNotFoundError:
+        logger.warning("Файл routes.json не найден")
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка при парсинге routes.json: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при загрузке готовых ссылок: {e}")
+        return []
+
+# Загружаем готовые ссылки на маршруты при импорте модуля
+ROUTE_COMMENTS = load_route_comments()
+
+async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для быстрого создания анонса из готового маршрута"""
+    logger.info(f"quick_command вызван, READY_ROUTES: {len(READY_ROUTES)}")
+    
+    if not READY_ROUTES:
+        logger.warning("READY_ROUTES пуст")
+        await update.message.reply_text(
+            "❌ Готовые маршруты не найдены. Обратитесь к администратору."
+        )
+        return ConversationHandler.END
+    
+    # Создаем клавиатуру с готовыми маршрутами
+    keyboard = []
+    for i, route in enumerate(READY_ROUTES):
+        keyboard.append([f"{i+1}. {route['name']}"])
+        logger.info(f"Добавлена кнопка: {i+1}. {route['name']}")
+    
+    keyboard.append(["❌ Отмена"])
+    
+    await update.message.reply_text(
+        "🚴‍♂️ <b>Выбери готовый маршрут:</b>\n\n"
+        "Просто выбери маршрут, и тебе нужно будет указать только дату, время и темп!",
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    
+    # Сохраняем состояние для обработки выбора маршрута
+    context.user_data['quick_mode'] = True
+    logger.info("quick_command завершен, возвращаем SELECT_ROUTE")
+    return SELECT_ROUTE
+
+async def handle_route_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор готового маршрута"""
+    text = update.message.text.strip()
+    logger.info(f"handle_route_selection вызван с текстом: '{text}'")
+    
+    # Проверяем отмену
+    if text == "❌ Отмена":
+        logger.info("Пользователь отменил выбор маршрута")
+        await update.message.reply_text(
+            "❌ Выбор маршрута отменен.\n\n"
+            "Используй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    # Проверяем, что это выбор маршрута
+    if text.startswith(('1.', '2.', '3.', '4.', '5.')):
+        try:
+            route_index = int(text.split('.')[0]) - 1
+            logger.info(f"Выбран маршрут с индексом: {route_index}")
+            if 0 <= route_index < len(READY_ROUTES):
+                route = READY_ROUTES[route_index]
+                logger.info(f"Загружен маршрут: {route['name']}")
+                context.user_data.update({
+                    'komoot_link': route['komoot_link'],
+                    'route_name': route['name'],
+                    'start_point_name': route['start_point'],
+                    'start_point_link': route['start_point_link'],
+                    'comment': route['comment'],
+                    'quick_mode': True
+                })
+                
+                await update.message.reply_text(
+                    f"🚴‍♂️ <b>Выбран готовый маршрут:</b>\n\n"
+                    f"<b>{route['name']}</b>\n"
+                    f"📍 Старт: {route['start_point']}\n"
+                    f"💬 {route['comment']}\n\n"
+                    f"Теперь укажи дату и время старта (например: <code>26.08 10:00</code>)",
+                    parse_mode='HTML',
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ASK_DATE_TIME
+            else:
+                logger.warning(f"Индекс маршрута {route_index} вне диапазона")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Ошибка при обработке выбора маршрута: {e}")
+            pass
+    
+    # Если это не выбор маршрута, возвращаемся к выбору
+    logger.info("Неверный выбор маршрута, показываем список снова")
+    keyboard = []
+    for i, route in enumerate(READY_ROUTES):
+        keyboard.append([f"{i+1}. {route['name']}"])
+    keyboard.append(["❌ Отмена"])
+    
+    await update.message.reply_text(
+        "Пожалуйста, выбери маршрут из списка выше.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return SELECT_ROUTE
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверяем, есть ли готовый маршрут в команде
+    command_args = update.message.text.split()
+    if len(command_args) > 1 and command_args[1].isdigit():
+        # Если передан номер маршрута, загружаем его
+        route_index = int(command_args[1]) - 1
+        if 0 <= route_index < len(READY_ROUTES):
+            route = READY_ROUTES[route_index]
+            context.user_data.update({
+                'komoot_link': route['komoot_link'],
+                'route_name': route['name'],
+                'start_point_name': route['start_point'],
+                'start_point_link': route['start_point_link'],
+                'comment': route['comment'],
+                'quick_mode': True
+            })
+            await update.message.reply_text(
+                f"🚴‍♂️ <b>Выбран готовый маршрут:</b>\n\n"
+                f"<b>{route['name']}</b>\n"
+                f"📍 Старт: {route['start_point']}\n"
+                f"💬 {route['comment']}\n\n"
+                f"Теперь укажи дату и время старта (например: <code>26.08 10:00</code>)",
+                parse_mode='HTML'
+            )
+            return ASK_DATE_TIME
+    
+    # Обычный старт
     tomorrow = datetime.now() + timedelta(days=1)
     date_example = tomorrow.strftime('%d.%m')
+    
+    # Первое сообщение - приветствие и команды
     await update.message.reply_text(
         f'🚴‍♂️ <b>Привет! Я бот для создания анонсов велопоездок</b>\n\n'
         f'Создам красивый анонс с маршрутом, точкой старта и всеми деталями.\n\n'
         f'<b>Основные команды:</b>\n'
         f'• /start - создать новый анонс\n'
         f'• /help - показать справку\n'
-        f'• /cancel - отменить создание\n'
-        f'• /restart - сбросить состояние\n\n'
+        f'• /restart - сбросить состояние',
+        parse_mode='HTML'
+    )
+    
+    # Второе сообщение - начало работы
+    await update.message.reply_text(
         f'<b>Давай начнем!</b>\n\n'
         f'Укажи дату и время старта (например: <code>{date_example} 10:00</code>)',
         parse_mode='HTML'
     )
+    
     return ASK_DATE_TIME
-
-async def reload_locations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для перезагрузки точек старта из файла"""
-    try:
-        global START_POINTS
-        START_POINTS = load_start_points()
-        points_count = len(START_POINTS)
-        await update.message.reply_text(
-            f"🔄 Точки старта перезагружены!\n\n"
-            f"📍 Загружено точек: {points_count}\n"
-            f"📝 Список: {', '.join([p['name'] for p in START_POINTS])}"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при перезагрузке точек старта: {e}")
-        await update.message.reply_text(f"❌ Ошибка при перезагрузке: {str(e)}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда помощи"""
@@ -213,7 +367,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Основные команды:</b>\n"
         "• /start - создать новый анонс\n"
         "• /help - эта справка\n"
-        "• /cancel - отменить создание\n"
         "• /restart - сбросить состояние\n\n"
         "<b>Точки старта:</b>\n"
         "• koferajd, Флаги, Лидл Лиман, Железничка Парк\n"
@@ -221,15 +374,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Формат даты:</b> ДД.ММ ЧЧ:ММ (например: 19.07 10:00)"
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для отмены создания анонса"""
-    await update.message.reply_text(
-        "❌ Создание анонса отменено.\n\n"
-        "Используй /start для создания нового анонса.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ConversationHandler.END
 
 async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем дату и время в user_data
@@ -244,31 +388,99 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['date_time'] = date_time_str
     context.user_data['parsed_datetime'] = dt  # Сохраняем распарсенную дату
     
+    # Проверяем быстрый режим
+    if context.user_data.get('quick_mode'):
+        # В быстром режиме после даты спрашиваем темп
+        context.user_data['quick_mode'] = False
+        keyboard = [[p] for p in PACE_OPTIONS]
+        await update.message.reply_text(
+            '✅ Дата и время приняты!\n\n'
+            'Теперь выбери ожидаемый темп (количество лун):',
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_PACE
+    
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
         
+    # Создаем клавиатуру с готовыми ссылками
+    keyboard = []
+    for route in ROUTE_COMMENTS:
+        keyboard.append([f"🔗 {route['name']}"])
+    
+    keyboard.append(["❌ Отмена"])
+    
     await update.message.reply_text(
         '✅ Дата и время приняты!\n\n'
-        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot (например: https://www.komoot.com/tour/2526993761):',
-        parse_mode='HTML'
+        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
+        'Или выбери готовый маршрут:',
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return ASK_KOMOOT_LINK
 
 async def ask_komoot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    match = KOMOOT_LINK_PATTERN.search(text)
-    if not match:
+    logger.info(f"ask_komoot_link вызван с текстом: '{text}'")
+    logger.info(f"ROUTE_COMMENTS загружено: {len(ROUTE_COMMENTS)}")
+    
+    # Проверяем, не выбрана ли готовая ссылка
+    if text.startswith("🔗 "):
+        route_name = text[2:]  # Убираем эмодзи
+        logger.info(f"Выбрана готовая ссылка: '{route_name}'")
+        # Ищем маршрут по названию
+        selected_route = None
+        for route in ROUTE_COMMENTS:
+            if route['name'] == route_name:
+                selected_route = route
+                break
+        
+        if selected_route:
+            # Автоматически вставляем готовую ссылку
+            text = selected_route['link']
+            logger.info(f"Найден маршрут: {selected_route['name']} -> {selected_route['link']}")
+            await update.message.reply_text(
+                f"✅ Выбран готовый маршрут: <b>{selected_route['name']}</b>\n\n"
+                f"Ссылка: {selected_route['link']}",
+                parse_mode='HTML',
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            logger.warning(f"Маршрут не найден: '{route_name}'")
+            await update.message.reply_text(
+                "❌ Маршрут не найден. Попробуй еще раз.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ASK_KOMOOT_LINK
+    
+    # Проверяем отмену
+    if text == "❌ Отмена":
+        logger.info("Пользователь отменил ввод ссылки")
         await update.message.reply_text(
-            'Пожалуйста, пришли корректную публичную ссылку на маршрут Komoot (например: https://www.komoot.com/tour/1234567890)'
+            "❌ Ввод ссылки отменен.\n\n"
+            "Используй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    match = KOMOOT_LINK_PATTERN.search(text)
+    logger.info(f"Результат поиска ссылки: {match}")
+    
+    if not match:
+        # Если ссылка некорректная, просто просим ввести правильную
+        await update.message.reply_text(
+            '❌ Неверный формат ссылки!\n\n'
+            'Пожалуйста, пришли корректную публичную ссылку на маршрут Komoot\n\n'
+            'Или используй кнопки выше для выбора готового маршрута.'
         )
         return ASK_KOMOOT_LINK
+    
     context.user_data['komoot_link'] = text
     context.user_data['tour_id'] = match.group(3)
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
-    await update.message.reply_text('Скачиваю маршрут и извлекаю данные...')
     # Переходим к обработке GPX
     return await process_gpx(update, context)
 
@@ -404,6 +616,14 @@ async def ask_pace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('Пожалуйста, выбери темп из предложенных вариантов.')
         return ASK_PACE
     context.user_data['pace'] = pace
+    
+    # Проверяем быстрый режим
+    if context.user_data.get('quick_mode'):
+        # В быстром режиме после темпа сразу к предпросмотру
+        context.user_data['quick_mode'] = False
+        # Комментарий уже есть из готового маршрута
+        return await preview_step(update, context)
+    
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
@@ -572,10 +792,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         status_text += f"\n✅ Кэш в порядке ({cache_size} файлов)"
     
+    status_text += "\n🔄 Кэш автоматически очищается раз в 180 дней"
+    
     await update.message.reply_text(status_text, parse_mode='HTML')
 
 def cleanup_old_gpx_files():
-    """Автоматически очищает GPX файлы старше 7 дней"""
+    """Автоматически очищает GPX файлы старше 180 дней"""
     try:
         current_time = datetime.now()
         cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
@@ -584,7 +806,7 @@ def cleanup_old_gpx_files():
         for file_path in cache_files:
             try:
                 file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                if (current_time - file_time).days > 7:
+                if (current_time - file_time).days > 180:
                     os.remove(file_path)
                     logger.info(f"Автоматически удален старый файл: {file_path}")
                     deleted_count += 1
@@ -596,6 +818,105 @@ def cleanup_old_gpx_files():
             
     except Exception as e:
         logger.error(f"Ошибка при автоматической очистке: {e}")
+
+async def preload_ready_routes():
+    """Предварительно загружает все готовые маршруты в кеш"""
+    logger.info("Начинаю предварительную загрузку готовых маршрутов в кеш...")
+    
+    for route in ROUTE_COMMENTS:
+        try:
+            # Извлекаем tour_id из ссылки
+            match = KOMOOT_LINK_PATTERN.search(route['link'])
+            if not match:
+                logger.warning(f"Не удалось извлечь tour_id из ссылки: {route['link']}")
+                continue
+                
+            tour_id = match.group(3)
+            route_name = route['name']
+            
+            # Проверяем, есть ли уже файл в кеше
+            gpx_files = glob.glob(f"{CACHE_DIR}/*-{tour_id}.gpx")
+            if gpx_files:
+                logger.info(f"Маршрут '{route_name}' уже в кеше, пропускаю")
+                continue
+            
+            logger.info(f"Загружаю маршрут '{route_name}' (tour_id: {tour_id})")
+            
+            # Скачиваем GPX
+            process = await asyncio.create_subprocess_exec(
+                'komootgpx',
+                '-d', tour_id,
+                '-o', CACHE_DIR,
+                '-e',
+                '-n',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+                if process.returncode == 0:
+                    logger.info(f"✅ Маршрут '{route_name}' успешно загружен в кеш")
+                else:
+                    error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
+                    logger.error(f"❌ Ошибка при загрузке маршрута '{route_name}': {error_msg}")
+            except asyncio.TimeoutError:
+                logger.warning(f"⏰ Таймаут при загрузке маршрута '{route_name}', убиваю процесс")
+                process.kill()
+                
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка при загрузке маршрута '{route.get('name', 'Unknown')}': {e}")
+    
+    logger.info("Предварительная загрузка готовых маршрутов завершена")
+
+def preload_ready_routes_sync():
+    """Синхронная версия предзагрузки готовых маршрутов для запуска при старте"""
+    logger.info("Начинаю синхронную предзагрузку готовых маршрутов в кеш...")
+    
+    for route in ROUTE_COMMENTS:
+        try:
+            # Извлекаем tour_id из ссылки
+            match = KOMOOT_LINK_PATTERN.search(route['link'])
+            if not match:
+                logger.warning(f"Не удалось извлечь tour_id из ссылки: {route['link']}")
+                continue
+                
+            tour_id = match.group(3)
+            route_name = route['name']
+            
+            # Проверяем, есть ли уже файл в кеше
+            gpx_files = glob.glob(f"{CACHE_DIR}/*-{tour_id}.gpx")
+            if gpx_files:
+                logger.info(f"Маршрут '{route_name}' уже в кеше, пропускаю")
+                continue
+            
+            logger.info(f"Загружаю маршрут '{route_name}' (tour_id: {tour_id})")
+            
+            # Скачиваем GPX синхронно
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ['komootgpx', '-d', tour_id, '-o', CACHE_DIR, '-e', '-n'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"✅ Маршрут '{route_name}' успешно загружен в кеш")
+                else:
+                    logger.error(f"❌ Ошибка при загрузке маршрута '{route_name}': {result.stderr}")
+                    
+            except subprocess.TimeoutExpired:
+                logger.warning(f"⏰ Таймаут при загрузке маршрута '{route_name}'")
+            except FileNotFoundError:
+                logger.error(f"❌ komootgpx не найден в системе")
+                break
+                
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка при загрузке маршрута '{route.get('name', 'Unknown')}': {e}")
+    
+    logger.info("Синхронная предзагрузка готовых маршрутов завершена")
 
 async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для очистки кэша"""
@@ -627,18 +948,24 @@ if __name__ == '__main__':
     # Автоматически очищаем старые GPX файлы при запуске
     cleanup_old_gpx_files()
     
+    # Предварительно загружаем все готовые маршруты в кеш
+    preload_ready_routes_sync()
+    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     # Добавляем команды статуса и очистки кэша
     app.add_handler(CommandHandler('status', status_command))
     app.add_handler(CommandHandler('clear_cache', clear_cache_command))
     app.add_handler(CommandHandler('help', help_command))
-    app.add_handler(CommandHandler('cancel', cancel_command))
     app.add_handler(CommandHandler('restart', restart_command)) # Добавляем команду restart
-    app.add_handler(CommandHandler('reload_locations', reload_locations_command)) # Добавляем команду reload_locations
+
+
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[
+            CommandHandler('start', start),
+            CommandHandler('quick', quick_command)
+        ],
         states={
             ASK_DATE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_date_time)],
             ASK_KOMOOT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_komoot_link)],
@@ -648,8 +975,9 @@ if __name__ == '__main__':
             ASK_PACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_pace)],
             ASK_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comment)],
             PREVIEW_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_handler)],
+            SELECT_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_route_selection)],
         },
-        fallbacks=[CommandHandler('cancel', cancel_command)],
+        fallbacks=[CommandHandler('restart', restart_command)],
     )
     app.add_handler(conv_handler)
     print('Bot started...')
