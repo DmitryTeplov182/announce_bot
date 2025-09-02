@@ -21,15 +21,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-ASK_DATE_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, PREVIEW_STEP, SELECT_ROUTE = range(10)
+ASK_DATE, ASK_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, ASK_IMAGE, PREVIEW_STEP, SELECT_ROUTE = range(12)
 
 STEP_TO_NAME = {
-    ASK_DATE_TIME: '✏️ Изм. дату',
-    ASK_KOMOOT_LINK: '✏️ Изм. ссылку Komoot',
-    ASK_ROUTE_NAME: '✏️ Изм. название',
-    ASK_START_POINT: '✏️ Изм. старт',
-    ASK_PACE: '✏️ Изм. темп',
-    ASK_COMMENT: '✏️ Изм. коммен.',
+    ASK_DATE: '📅 Изм. дату',
+    ASK_TIME: '⏰ Изм. время',
+    ASK_KOMOOT_LINK: '🔗 Изм. ссылку Komoot',
+    ASK_ROUTE_NAME: '📝 Изм. название',
+    ASK_START_POINT: '📍 Изм. старт',
+    ASK_PACE: '🌙 Изм. темп',
+    ASK_COMMENT: '💬 Изм. коммен.',
+    ASK_IMAGE: '📷 Изм. картинку',
 }
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
@@ -139,6 +141,35 @@ def get_time_of_day(dt: datetime) -> str:
         return 'день'
     else:
         return 'вечер'
+
+def extract_route_name_from_gpx(gpx_path: str) -> str:
+    """Извлекает название маршрута из GPX файла"""
+    try:
+        import xml.etree.ElementTree as ET
+
+        tree = ET.parse(gpx_path)
+        root = tree.getroot()
+
+        # Поиск названия в metadata
+        metadata = root.find('{http://www.topografix.com/GPX/1/1}metadata')
+        if metadata is not None:
+            name_elem = metadata.find('{http://www.topografix.com/GPX/1/1}name')
+            if name_elem is not None and name_elem.text:
+                return name_elem.text.strip()
+
+        # Поиск названия в trk (track)
+        trk = root.find('{http://www.topografix.com/GPX/1/1}trk')
+        if trk is not None:
+            name_elem = trk.find('{http://www.topografix.com/GPX/1/1}name')
+            if name_elem is not None and name_elem.text:
+                return name_elem.text.strip()
+
+        # Если ничего не нашли, возвращаем пустую строку
+        return ""
+
+    except Exception as e:
+        logger.error(f"Ошибка при извлечении названия из GPX: {e}")
+        return ""
 
 def parse_date_time(date_time_str: str) -> tuple[datetime, str]:
     """
@@ -282,7 +313,7 @@ async def handle_route_selection(update: Update, context: ContextTypes.DEFAULT_T
                     parse_mode='HTML',
                     reply_markup=ReplyKeyboardRemove()
                 )
-                return ASK_DATE_TIME
+                return ASK_DATE
             else:
                 logger.warning(f"Индекс маршрута {route_index} вне диапазона")
         except (ValueError, IndexError) as e:
@@ -326,12 +357,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Теперь укажи дату и время старта (например: <code>26.08 10:00</code>)",
                 parse_mode='HTML'
             )
-            return ASK_DATE_TIME
+            return ASK_DATE
     
     # Обычный старт
-    tomorrow = datetime.now() + timedelta(days=1)
-    date_example = tomorrow.strftime('%d.%m')
-    
     # Первое сообщение - приветствие и команды
     await update.message.reply_text(
         f'🚴‍♂️ <b>Привет! Я бот для создания анонсов велопоездок</b>\n\n'
@@ -342,15 +370,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f'• /restart - сбросить состояние',
         parse_mode='HTML'
     )
-    
-    # Второе сообщение - начало работы
-    await update.message.reply_text(
-        f'<b>Давай начнем!</b>\n\n'
-        f'Укажи дату и время старта (например: <code>{date_example} 10:00</code>)',
-        parse_mode='HTML'
-    )
-    
-    return ASK_DATE_TIME
+
+    # Начинаем с выбора даты
+    return await ask_date(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда помощи"""
@@ -378,16 +400,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем дату и время в user_data
     date_time_str = update.message.text.strip()
-    
+
     # Валидируем дату
     dt, error_msg = parse_date_time(date_time_str)
     if error_msg:
         await update.message.reply_text(error_msg)
-        return ASK_DATE_TIME
-    
+        return ASK_DATE
+
     context.user_data['date_time'] = date_time_str
     context.user_data['parsed_datetime'] = dt  # Сохраняем распарсенную дату
-    
+
     # Проверяем быстрый режим
     if context.user_data.get('quick_mode'):
         # В быстром режиме после даты спрашиваем темп
@@ -399,20 +421,248 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
         return ASK_PACE
-    
+
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
-        
+
     # Создаем клавиатуру с готовыми ссылками
     keyboard = []
     for route in ROUTE_COMMENTS:
         keyboard.append([f"🔗 {route['name']}"])
-    
+
     keyboard.append(["❌ Отмена"])
-    
+
     await update.message.reply_text(
         '✅ Дата и время приняты!\n\n'
+        'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
+        'Или выбери готовый маршрут:',
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ASK_KOMOOT_LINK
+
+async def ask_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает выбор даты"""
+    # Создаем кнопки с датами: сегодня, завтра, послезавтра
+    now = datetime.now()
+    dates = []
+
+    for i in range(3):
+        date = now + timedelta(days=i)
+        if i == 0:
+            date_text = f"📅 Сегодня ({date.strftime('%d.%m')})"
+        elif i == 1:
+            date_text = f"📅 Завтра ({date.strftime('%d.%m')})"
+        else:
+            date_text = f"📅 Послезавтра ({date.strftime('%d.%m')})"
+        dates.append([date_text])
+
+    dates.append(["❌ Отмена"])
+
+    await update.message.reply_text(
+        '🚴‍♂️ <b>Выбери дату старта</b>\n\n'
+        '• Выбери дату из списка ниже\n'
+        '• Или введи дату в формате: <code>ДД.ММ</code> (например: <code>25.12</code>)',
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(dates, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ASK_DATE
+
+async def ask_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает выбор времени"""
+    # Создаем кнопки с временем
+    times = [
+        ["🌅 06:00"],
+        ["🌅 07:00"],
+        ["☀️ 08:00"],
+        ["☀️ 09:00"],
+        ["☀️ 10:00"],
+        ["🌞 11:00"],
+        ["🌞 12:00"],
+        ["🌞 13:00"],
+        ["🌆 14:00"],
+        ["🌆 15:00"],
+        ["🌙 16:00"],
+        ["❌ Отмена"]
+    ]
+
+    await update.message.reply_text(
+        '🚴‍♂️ <b>Выбери время старта</b>\n\n'
+        '• Выбери время из списка ниже\n'
+        '• Или введи время в формате: <code>ЧЧ:ММ</code> (например: <code>08:30</code>)',
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(times, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ASK_TIME
+
+async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор даты"""
+    text = update.message.text.strip()
+
+    if text == "❌ Отмена":
+        await update.message.reply_text(
+            "❌ Выбор даты отменен.\n\nИспользуй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Извлекаем дату из текста кнопки
+    now = datetime.now()
+    selected_date = None
+
+    # Проверяем, является ли текст датой в формате ДД.ММ
+    date_match = re.match(r'^(\d{1,2})\.(\d{1,2})$', text)
+    if date_match:
+        try:
+            day, month = map(int, date_match.groups())
+            # Создаем дату с текущим годом
+            selected_date = datetime(now.year, month, day).date()
+
+            # Проверяем, что дата не в прошлом (если это текущий год)
+            if selected_date < now.date() and selected_date.year == now.year:
+                await update.message.reply_text(
+                    "❌ <b>Указанная дата уже прошла!</b> Выбери будущую дату.",
+                    parse_mode='HTML'
+                )
+                return ASK_DATE
+
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат даты. Используй формат ДД.ММ (например: 25.12)",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ASK_DATE
+    else:
+        # Проверяем кнопки
+        if "Сегодня" in text:
+            selected_date = now.date()
+        elif "Завтра" in text:
+            selected_date = (now + timedelta(days=1)).date()
+        elif "Послезавтра" in text:
+            selected_date = (now + timedelta(days=2)).date()
+        else:
+            await update.message.reply_text(
+                "❌ Неизвестная дата. Выбери из списка или введи в формате ДД.ММ",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ASK_DATE
+
+    # Сохраняем выбранную дату
+    context.user_data['selected_date'] = selected_date
+
+    # Переходим к выбору времени
+    return await ask_time(update, context)
+
+async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор времени"""
+    text = update.message.text.strip()
+
+    if text == "❌ Отмена":
+        await update.message.reply_text(
+            "❌ Выбор времени отменен.\n\nИспользуй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Сначала проверяем, является ли текст временем в формате ЧЧ:ММ
+    time_match = re.match(r'^(\d{1,2}):(\d{2})$', text)
+    selected_time = None
+
+    if time_match:
+        try:
+            hour, minute = map(int, time_match.groups())
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                selected_time = datetime.strptime(text, '%H:%M').time()
+            else:
+                await update.message.reply_text(
+                    "❌ Неверное время. Часы должны быть от 00 до 23, минуты от 00 до 59.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ASK_TIME
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат времени. Используй формат ЧЧ:ММ (например: 08:30)",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ASK_TIME
+    else:
+        # Проверяем кнопки с временем
+        time_buttons = {
+            "🌅 06:00": "06:00",
+            "🌅 07:00": "07:00",
+            "☀️ 08:00": "08:00",
+            "☀️ 09:00": "09:00",
+            "☀️ 10:00": "10:00",
+            "🌞 11:00": "11:00",
+            "🌞 12:00": "12:00",
+            "🌞 13:00": "13:00",
+            "🌆 14:00": "14:00",
+            "🌆 15:00": "15:00",
+            "🌙 16:00": "16:00"
+        }
+
+        if text in time_buttons:
+            selected_time_str = time_buttons[text]
+            selected_time = datetime.strptime(selected_time_str, '%H:%M').time()
+        else:
+            await update.message.reply_text(
+                "❌ Неизвестное время. Выбери из списка или введи в формате ЧЧ:ММ",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ASK_TIME
+    selected_date = context.user_data.get('selected_date')
+
+    if not selected_date:
+        await update.message.reply_text(
+            "❌ Дата не найдена. Начни заново.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Создаем полный datetime
+    selected_datetime = datetime.combine(selected_date, selected_time)
+
+    # Валидируем дату (не в прошлом)
+    now = datetime.now()
+    if selected_datetime < now:
+        await update.message.reply_text(
+            "❌ <b>Указанная дата уже прошла!</b> Выбери будущую дату.",
+            parse_mode='HTML'
+        )
+        return ASK_DATE
+
+    # Сохраняем дату и время
+    date_time_str = selected_datetime.strftime('%d.%m %H:%M')
+    context.user_data['date_time'] = date_time_str
+    context.user_data['parsed_datetime'] = selected_datetime
+
+    # Проверяем быстрый режим
+    if context.user_data.get('quick_mode'):
+        # В быстром режиме после даты спрашиваем темп
+        context.user_data['quick_mode'] = False
+        keyboard = [[p] for p in PACE_OPTIONS]
+        await update.message.reply_text(
+            f'✅ Дата и время приняты: <b>{date_time_str}</b>\n\n'
+            'Теперь выбери ожидаемый темп (количество лун):',
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_PACE
+
+    if context.user_data.get('edit_mode'):
+        context.user_data['edit_mode'] = False
+        return await preview_step(update, context)
+
+    # Создаем клавиатуру с готовыми ссылками
+    keyboard = []
+    for route in ROUTE_COMMENTS:
+        keyboard.append([f"🔗 {route['name']}"])
+
+    keyboard.append(["❌ Отмена"])
+
+    await update.message.reply_text(
+        f'✅ Дата и время приняты: <b>{date_time_str}</b>\n\n'
         'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
         'Или выбери готовый маршрут:',
         parse_mode='HTML',
@@ -478,9 +728,13 @@ async def ask_komoot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['komoot_link'] = text
     context.user_data['tour_id'] = match.group(3)
+
+    # Всегда скачиваем GPX при изменении ссылки, независимо от режима редактирования
     if context.user_data.get('edit_mode'):
+        # Если мы в режиме редактирования, после скачивания GPX вернемся к предпросмотру
         context.user_data['edit_mode'] = False
-        return await preview_step(update, context)
+        context.user_data['after_gpx_edit'] = True
+
     # Переходим к обработке GPX
     return await process_gpx(update, context)
 
@@ -543,19 +797,123 @@ async def process_gpx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['length_km'] = round(length_km)
         context.user_data['uphill'] = round(uphill)
         logger.info(f"GPX обработан: длина {length_km} км, набор {uphill} м")
+
+        # Автоматически извлекаем название из GPX
+        extracted_name = extract_route_name_from_gpx(gpx_path)
+        if extracted_name:
+            context.user_data['extracted_name'] = extracted_name
+            logger.info(f"Извлечено название из GPX: {extracted_name}")
+        else:
+            context.user_data['extracted_name'] = None
+            logger.info("Название в GPX файле не найдено")
+
     except Exception as e:
         logger.error(f"Ошибка при обработке GPX файла: {str(e)}", exc_info=True)
         await update.message.reply_text('Ошибка при обработке GPX-файла. Попробуй другую ссылку на маршрут Komoot:')
         return ASK_KOMOOT_LINK
-        
-    await update.message.reply_text('Введи название маршрута (например: Шайкаш - Чуруг - Србобран - Темерин):')
+
+    # Создаем клавиатуру для выбора названия
+    extracted_name = context.user_data.get('extracted_name')
+
+    if extracted_name:
+        keyboard = [
+            ["✅ Оставить извлеченное"],
+            ["✏️ Ввести другое"],
+            ["❌ Отмена"]
+        ]
+        message_text = (
+            f'🚴‍♂️ <b>Название маршрута из GPX:</b> <code>{extracted_name}</code>\n\n'
+            f'Выбери действие:'
+        )
+    else:
+        keyboard = [
+            ["✏️ Ввести название"],
+            ["❌ Отмена"]
+        ]
+        message_text = 'Введи название маршрута (например: Шайкаш - Чуруг - Србобран - Темерин):'
+
+    # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+    if context.user_data.get('after_gpx_edit'):
+        context.user_data['after_gpx_edit'] = False
+        # После изменения GPX возвращаемся к предпросмотру
+        return await preview_step(update, context)
+
+    await update.message.reply_text(
+        message_text,
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
     return ASK_ROUTE_NAME
 
 async def ask_route_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['route_name'] = update.message.text.strip()
+    text = update.message.text.strip()
+
+    # Проверяем отмену
+    if text == "❌ Отмена":
+        await update.message.reply_text(
+            "❌ Ввод названия отменен.\n\nИспользуй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Проверяем, выбрано ли извлеченное название
+    extracted_name = context.user_data.get('extracted_name')
+    if extracted_name and text == "✅ Оставить извлеченное":
+        context.user_data['route_name'] = extracted_name
+        await update.message.reply_text(
+            f"✅ Название маршрута: <b>{extracted_name}</b>",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+        if context.user_data.get('after_gpx_edit'):
+            context.user_data['after_gpx_edit'] = False
+            # После изменения GPX возвращаемся к предпросмотру
+            return await preview_step(update, context)
+
+        # Переходим к выбору точки старта
+        keyboard = [[p['name']] for p in START_POINTS]
+        await update.message.reply_text(
+            f"Маршрут: {context.user_data['length_km']} км, набор: {context.user_data['uphill']} м\n\nВыбери точку старта:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_START_POINT
+
+    # Проверяем, выбрано ли "Ввести другое" или "Ввести название"
+    if text in ["✏️ Ввести другое", "✏️ Ввести название"]:
+        if extracted_name:
+            await update.message.reply_text(
+                f'Текущее название из GPX: <code>{extracted_name}</code>\n\n'
+                f'Введи новое название маршрута:',
+                parse_mode='HTML',
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text(
+                'Введи название маршрута (например: Шайкаш - Чуруг - Србобран - Темерин):',
+                reply_markup=ReplyKeyboardRemove()
+            )
+        return ASK_ROUTE_NAME
+
+    # Обычный ввод названия
+    context.user_data['route_name'] = text
+    await update.message.reply_text(
+        f"✅ Название маршрута: <b>{text}</b>",
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+    if context.user_data.get('after_gpx_edit'):
+        context.user_data['after_gpx_edit'] = False
+        # После изменения GPX возвращаемся к предпросмотру
+        return await preview_step(update, context)
+
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
+
     # Кнопки для выбора точки старта
     keyboard = [[p['name']] for p in START_POINTS]
     await update.message.reply_text(
@@ -578,6 +936,13 @@ async def ask_start_point(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['start_point_name'] = point['name']
         context.user_data['start_point_link'] = point['link']
+
+        # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+        if context.user_data.get('after_gpx_edit'):
+            context.user_data['after_gpx_edit'] = False
+            # После изменения GPX возвращаемся к предпросмотру
+            return await preview_step(update, context)
+
         if context.user_data.get('edit_mode'):
             context.user_data['edit_mode'] = False
             return await preview_step(update, context)
@@ -600,6 +965,13 @@ async def ask_start_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('Пожалуйста, пришли корректную ссылку на Google Maps (начинается с http...)')
             return ASK_START_LINK
         context.user_data['start_point_link'] = link
+
+        # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+        if context.user_data.get('after_gpx_edit'):
+            context.user_data['after_gpx_edit'] = False
+            # После изменения GPX возвращаемся к предпросмотру
+            return await preview_step(update, context)
+
         if context.user_data.get('edit_mode'):
             context.user_data['edit_mode'] = False
             return await preview_step(update, context)
@@ -616,14 +988,20 @@ async def ask_pace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('Пожалуйста, выбери темп из предложенных вариантов.')
         return ASK_PACE
     context.user_data['pace'] = pace
-    
+
     # Проверяем быстрый режим
     if context.user_data.get('quick_mode'):
         # В быстром режиме после темпа сразу к предпросмотру
         context.user_data['quick_mode'] = False
         # Комментарий уже есть из готового маршрута
         return await preview_step(update, context)
-    
+
+    # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+    if context.user_data.get('after_gpx_edit'):
+        context.user_data['after_gpx_edit'] = False
+        # После изменения GPX возвращаемся к предпросмотру
+        return await preview_step(update, context)
+
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
@@ -636,10 +1014,112 @@ async def ask_pace(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     comment = update.message.text.strip()
     context.user_data['comment'] = comment
+
+    # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+    if context.user_data.get('after_gpx_edit'):
+        context.user_data['after_gpx_edit'] = False
+        # После изменения GPX возвращаемся к предпросмотру
+        return await preview_step(update, context)
+
     if context.user_data.get('edit_mode'):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
-    return await preview_step(update, context)
+
+    # В обычном потоке после комментариев предлагаем добавить картинку
+    await update.message.reply_text(
+        "📷 <b>Хотите добавить картинку к анонсу?</b>\n\n"
+        "Пришлите картинку или нажмите 'Пропустить':",
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup([
+            ["⏭️ Пропустить"],
+            ["❌ Отмена"]
+        ], one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ASK_IMAGE
+
+async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор или изменение картинки для анонса"""
+    # Проверяем, пришло ли фото
+    if update.message.photo:
+        # Получаем самое большое фото
+        photo = update.message.photo[-1]
+        context.user_data['announce_image'] = photo.file_id
+
+        await update.message.reply_text(
+            "✅ <b>Картинка добавлена к анонсу!</b>",
+            parse_mode='HTML'
+        )
+
+        # Проверяем, находимся ли мы в режиме редактирования после изменения GPX
+        if context.user_data.get('after_gpx_edit'):
+            context.user_data['after_gpx_edit'] = False
+            # После изменения возвращаемся к предпросмотру
+            return await preview_step(update, context)
+
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
+
+        # Если это не режим редактирования, возвращаемся к предпросмотру
+        return await preview_step(update, context)
+
+    # Проверяем текстовые команды
+    text = update.message.text.strip()
+
+    if text == "❌ Отмена":
+        await update.message.reply_text(
+            "❌ Изменение картинки отменено.\n\nИспользуй /start для создания нового анонса.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    if text == "⏭️ Пропустить":
+        # Пропускаем добавление картинки, переходим к предпросмотру
+        return await preview_step(update, context)
+
+    if text == "🗑️ Удалить картинку":
+        context.user_data['announce_image'] = None
+        await update.message.reply_text(
+            "✅ <b>Картинка удалена из анонса!</b>",
+            parse_mode='HTML'
+        )
+
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
+        return await preview_step(update, context)
+
+    if text == "📷 Изменить картинку":
+        await update.message.reply_text(
+            "📷 <b>Пришлите картинку для анонса</b>\n\n"
+            "Или отправьте команду:",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["🗑️ Удалить картинку"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_IMAGE
+
+    # Если пришел неизвестный текст
+    # Проверяем режим редактирования
+    if context.user_data.get('edit_mode'):
+        await update.message.reply_text(
+            "❌ Пожалуйста, пришлите картинку или выберите действие из кнопок ниже:",
+            reply_markup=ReplyKeyboardMarkup([
+                ["🗑️ Удалить картинку"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Пожалуйста, пришлите картинку или выберите действие из кнопок ниже:",
+            reply_markup=ReplyKeyboardMarkup([
+                ["⏭️ Пропустить"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+    return ASK_IMAGE
 
 async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Формируем анонс
@@ -657,7 +1137,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_part = ''
         if error_msg:
             await update.message.reply_text(error_msg, parse_mode='HTML')
-            return ASK_DATE_TIME # Вернуться к запросу даты
+            return ASK_DATE # Вернуться к запросу даты
     komoot_link = context.user_data.get('komoot_link', '-')
     route_name = context.user_data.get('route_name', '-')
     start_point_name = context.user_data.get('start_point_name', '-')
@@ -674,18 +1154,39 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
         f"Ожидаемый темп: {pace_emoji}\n"
         f"\n"
-        f"{comment}"
+        f"{comment}\n\n"
+        f"Ставьте реакцию если собираетесь поехать"
     )
     # Кнопки предпросмотра
     buttons = [["✅ Отправить"]]
+
+    # Добавляем кнопки для управления картинкой
+    announce_image = context.user_data.get('announce_image')
+    if announce_image:
+        buttons.append(["🗑️ Удалить картинку"])
+    else:
+        buttons.append(["📷 Добавить картинку"])
+
     for step, name in STEP_TO_NAME.items():
         buttons.append([name])
-    await update.message.reply_text(
-        announce + '\n\nВсё верно?',
-        parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True),
-        disable_web_page_preview=True
-    )
+
+    # Проверяем, есть ли картинка для анонса
+    if announce_image:
+        # Отправляем картинку с caption
+        await update.message.reply_photo(
+            photo=announce_image,
+            caption=announce + '\n\nВсё верно?',
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+        )
+    else:
+        # Отправляем обычное текстовое сообщение
+        await update.message.reply_text(
+            announce + '\n\nВсё верно?',
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True),
+            disable_web_page_preview=True
+        )
     return PREVIEW_STEP
 
 async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -707,7 +1208,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_part = ''
             if error_msg:
                 await update.message.reply_text(error_msg, parse_mode='HTML')
-                return ASK_DATE_TIME # Вернуться к запросу даты
+                return ASK_DATE # Вернуться к запросу даты
         komoot_link = context.user_data.get('komoot_link', '-')
         route_name = context.user_data.get('route_name', '-')
         start_point_name = context.user_data.get('start_point_name', '-')
@@ -724,9 +1225,22 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
             f"Ожидаемый темп: {pace_emoji}\n"
             f"\n"
-            f"{comment}"
+            f"{comment}\n\n"
+            f"Ставьте реакцию если собираетесь поехать"
         )
-        await update.message.reply_text(announce, parse_mode='HTML', disable_web_page_preview=True)
+
+        # Проверяем, есть ли картинка для анонса
+        announce_image = context.user_data.get('announce_image')
+        if announce_image:
+            # Отправляем картинку с caption
+            await update.message.reply_photo(
+                photo=announce_image,
+                caption=announce,
+                parse_mode='HTML'
+            )
+        else:
+            # Отправляем обычное текстовое сообщение
+            await update.message.reply_text(announce, parse_mode='HTML', disable_web_page_preview=True)
         if gpx_path:
             with open(gpx_path, 'rb') as f:
                 await update.message.reply_document(f, filename=os.path.basename(gpx_path))
@@ -741,15 +1255,52 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         return ConversationHandler.END
+
+    # Обработка кнопок управления картинкой
+    if text == "📷 Добавить картинку":
+        await update.message.reply_text(
+            "📷 <b>Пришлите картинку для анонса</b>\n\n"
+            "Или отправьте команду:",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["🗑️ Удалить картинку"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_IMAGE
+
+    if text == "🗑️ Удалить картинку":
+        context.user_data['announce_image'] = None
+        await update.message.reply_text(
+            "✅ <b>Картинка удалена из анонса!</b>",
+            parse_mode='HTML'
+        )
+        return await preview_step(update, context)
+
     # Если выбрана кнопка редактирования — возвращаем на нужный этап
     for step, name in STEP_TO_NAME.items():
         if text == name:
             context.user_data['edit_mode'] = True
-            if step == ASK_DATE_TIME:
-                await update.message.reply_text('Укажи дату и время старта:', reply_markup=ReplyKeyboardRemove())
-                return ASK_DATE_TIME
+            if step == ASK_DATE:
+                return await ask_date(update, context)
+            elif step == ASK_TIME:
+                return await ask_time(update, context)
             elif step == ASK_KOMOOT_LINK:
-                await update.message.reply_text('Пришли публичную ссылку на маршрут Komoot:', reply_markup=ReplyKeyboardRemove())
+                # Для изменения ссылки Komoot - сбрасываем GPX данные и просим новую ссылку
+                context.user_data['gpx_path'] = None
+                context.user_data['length_km'] = None
+                context.user_data['uphill'] = None
+                context.user_data['extracted_name'] = None
+                keyboard = []
+                for route in ROUTE_COMMENTS:
+                    keyboard.append([f"🔗 {route['name']}"])
+                keyboard.append(["❌ Отмена"])
+                await update.message.reply_text(
+                    'Пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
+                    'Или выбери готовый маршрут:',
+                    parse_mode='HTML',
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                )
                 return ASK_KOMOOT_LINK
             elif step == ASK_ROUTE_NAME:
                 await update.message.reply_text('Введи название маршрута:', reply_markup=ReplyKeyboardRemove())
@@ -765,6 +1316,17 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif step == ASK_COMMENT:
                 await update.message.reply_text('Введи комментарий:', reply_markup=ReplyKeyboardRemove())
                 return ASK_COMMENT
+            elif step == ASK_IMAGE:
+                await update.message.reply_text(
+                    "📷 <b>Пришлите картинку для анонса</b>\n\n"
+                    "Или отправьте команду:",
+                    parse_mode='HTML',
+                    reply_markup=ReplyKeyboardMarkup([
+                        ["🗑️ Удалить картинку"],
+                        ["❌ Отмена"]
+                    ], one_time_keyboard=True, resize_keyboard=True)
+                )
+                return ASK_IMAGE
     # Если что-то другое — повторяем предпросмотр
     return await preview_step(update, context)
 
@@ -976,13 +1538,15 @@ if __name__ == '__main__':
             CommandHandler('quick', quick_command)
         ],
         states={
-            ASK_DATE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_date_time)],
+            ASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_selection)],
+            ASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_selection)],
             ASK_KOMOOT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_komoot_link)],
             ASK_ROUTE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_route_name)],
             ASK_START_POINT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_point)],
             ASK_START_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_link)],
             ASK_PACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_pace)],
             ASK_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comment)],
+            ASK_IMAGE: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, ask_image)],
             PREVIEW_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_handler)],
             SELECT_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_route_selection)],
         },
