@@ -12,7 +12,22 @@ import gpxpy
 import gpxpy.gpx
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import pytz
 load_dotenv()
+
+# Импорты для дашборда погоды
+import argparse
+import sys
+import gpxpy
+import openmeteo_requests
+import requests_cache
+from retry_requests import retry
+import math
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import FancyBboxPatch
+import numpy as np
+from PIL import Image, ImageDraw
 
 # Включаем логирование
 logging.basicConfig(
@@ -21,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-ASK_DATE, ASK_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_PACE, ASK_COMMENT, ASK_IMAGE, PREVIEW_STEP, SELECT_ROUTE = range(12)
+ASK_DATE, ASK_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_FINISH_POINT, ASK_FINISH_LINK, ASK_PACE, ASK_COMMENT, ASK_IMAGE, PREVIEW_STEP, SELECT_ROUTE = range(14)
 
 STEP_TO_NAME = {
     ASK_DATE: '📅 Изм. дату',
@@ -29,89 +44,92 @@ STEP_TO_NAME = {
     ASK_KOMOOT_LINK: '🔗 Изм. ссылку Komoot',
     ASK_ROUTE_NAME: '📝 Изм. название',
     ASK_START_POINT: '📍 Изм. старт',
+    ASK_FINISH_POINT: '🏁 Изм. финиш',
     ASK_PACE: '🌙 Изм. темп',
     ASK_COMMENT: '💬 Изм. коммен.',
     ASK_IMAGE: '📷 Изм. картинку',
 }
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
+TIMEZONE = os.getenv('TIMEZONE', 'Europe/Belgrade')
 
 # Паттерн для извлечения tour_id из Komoot-ссылки
 KOMOOT_LINK_PATTERN = re.compile(r'(https?://)?(www\.)?komoot\.[^/]+/tour/(\d+)')
 CACHE_DIR = 'cache'
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-def load_start_points():
-    """Загружает точки старта из JSON файла"""
+def load_points_from_file(filename, fallback_points=None):
+    """Загружает точки из JSON файла
+
+    Args:
+        filename (str): Имя файла (start_points.json или finish_points.json)
+        fallback_points (list): Точки по умолчанию, если файл не найден
+
+    Returns:
+        list: Список точек с полями name и link
+    """
     try:
-        with open('start_points.json', 'r', encoding='utf-8') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            start_points = data.get('start_points', [])
-            
+
+            # Новый формат - точки в массиве "points"
+            if 'points' in data and isinstance(data['points'], list):
+                points = data['points']
+            # Старый формат для обратной совместимости
+            elif 'start_points' in data:
+                points = data['start_points']
+            else:
+                points = []
+
             # Автоматически добавляем "Свою точку" в конец списка
-            start_points.append({
+            points.append({
                 'name': 'Своя точка',
                 'link': None
             })
-            
-            return start_points
-            
-    except FileNotFoundError:
-        logger.warning("Файл start_points.json не найден, используем точки по умолчанию")
-        default_points = [
-            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
-            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
-            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
-            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
-            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
-        ]
-        
-        # Добавляем "Свою точку" и к точкам по умолчанию
-        default_points.append({
-            'name': 'Своя точка',
-            'link': None
-        })
-        
-        return default_points
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка при парсинге start_points.json: {e}")
-        default_points = [
-            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
-            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
-            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
-            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
-            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
-        ]
-        
-        # Добавляем "Свою точку" и к точкам по умолчанию
-        default_points.append({
-            'name': 'Своя точка',
-            'link': None
-        })
-        
-        return default_points
-        
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка при загрузке точек старта: {e}")
-        default_points = [
-            {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
-            {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
-            {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
-            {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
-            {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
-        ]
-        
-        # Добавляем "Свою точку" и к точкам по умолчанию
-        default_points.append({
-            'name': 'Своя точка',
-            'link': None
-        })
-        
-        return default_points
 
-# Загружаем точки старта при импорте модуля
+            return points
+
+    except FileNotFoundError:
+        logger.warning(f"Файл {filename} не найден, используем точки по умолчанию")
+        return fallback_points or get_default_points()
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка при парсинге {filename}: {e}")
+        return fallback_points or get_default_points()
+
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при загрузке точек из {filename}: {e}")
+        return fallback_points or get_default_points()
+
+def get_default_points():
+    """Возвращает точки по умолчанию"""
+    default_points = [
+        {'name': 'koferajd', 'link': 'https://maps.app.goo.gl/iTBcRqjvhJ9DYvRK7'},
+        {'name': 'Флаги', 'link': 'https://maps.app.goo.gl/j95ME2cuzX8k9hnj7'},
+        {'name': 'Лидл Лиман', 'link': 'https://maps.app.goo.gl/5JKtAgGBVe48jM9r7'},
+        {'name': 'Железничка Парк', 'link': 'https://maps.app.goo.gl/hSZ9C4Xue5RVpMea8'},
+        {'name': 'Макси у Бульвара Европы', 'link': 'https://maps.app.goo.gl/3ZbDZM9VVRBDDddp8?g_st=ipc'},
+    ]
+
+    # Добавляем "Свою точку"
+    default_points.append({
+        'name': 'Своя точка',
+        'link': None
+    })
+
+    return default_points
+
+def load_start_points():
+    """Загружает точки старта из JSON файла"""
+    return load_points_from_file("start_points.json")
+
+def load_finish_points():
+    """Загружает точки финиша из JSON файла"""
+    return load_points_from_file("finish_points.json")
+
+# Загружаем точки старта и финиша при импорте модуля
 START_POINTS = load_start_points()
+FINISH_POINTS = load_finish_points()
 
 # Предустановленные точки старта (заполнишь потом)
 # START_POINTS = [
@@ -135,6 +153,7 @@ RU_WEEKDAYS = [
 ]
 
 def get_time_of_day(dt: datetime) -> str:
+    """Определяет время суток на основе datetime объекта (работает с timezone-aware)"""
     if dt.hour < 12:
         return 'утро'
     elif dt.hour < 18:
@@ -175,26 +194,44 @@ def parse_date_time(date_time_str: str) -> tuple[datetime, str]:
     """
     Парсит строку даты и времени, возвращает (datetime, error_message)
     Ожидается формат: 19.07 10:00
+    Всегда возвращает datetime с временной зоной из TIMEZONE
     """
     try:
-        dt = datetime.strptime(date_time_str, '%d.%m %H:%M')
+        # Парсим дату без timezone
+        dt_naive = datetime.strptime(date_time_str, '%d.%m %H:%M')
         # Подставляем текущий год
-        dt = dt.replace(year=datetime.now().year)
-        
+        dt_naive = dt_naive.replace(year=datetime.now().year)
+
+        # Получаем временную зону из настроек
+        try:
+            tz = pytz.timezone(TIMEZONE)
+        except pytz.exceptions.UnknownTimeZoneError:
+            # Если указана неизвестная timezone, используем UTC
+            logger.warning(f"Неизвестная временная зона: {TIMEZONE}, используем UTC")
+            tz = pytz.UTC
+
+        # Создаем timezone-aware datetime
+        dt = tz.localize(dt_naive)
+
+        # Получаем текущее время в той же timezone для сравнения
+        now = datetime.now(tz)
+
         # Проверяем, что дата не в прошлом
-        now = datetime.now()
-        if dt < now:
+        if dt.date() < now.date():
             return None, "❌ <b>Указанная дата уже прошла!</b> Укажи будущую дату."
-        
+        elif dt.date() == now.date() and dt.time() <= now.time():
+            return None, "❌ <b>Указанное время уже прошло!</b> Укажи время в будущем."
+
         # Проверяем, что дата не слишком далеко в будущем (больше года)
         if dt > now + timedelta(days=365):
             return None, "❌ <b>Дата слишком далеко в будущем!</b> Укажи дату в пределах года."
-            
+
         return dt, None
-        
+
     except ValueError:
         return None, "❌ <b>Неверный формат даты!</b> Используй формат: ДД.ММ ЧЧ:ММ (например: 19.07 10:00)"
     except Exception as e:
+        logger.error(f"Ошибка при обработке даты: {str(e)}", exc_info=True)
         return None, f"❌ <b>Ошибка при обработке даты:</b> {str(e)}"
 
 def load_ready_routes():
@@ -404,7 +441,7 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Валидируем дату
     dt, error_msg = parse_date_time(date_time_str)
     if error_msg:
-        await update.message.reply_text(error_msg)
+        await update.message.reply_text(error_msg, parse_mode='HTML')
         return ASK_DATE
 
     context.user_data['date_time'] = date_time_str
@@ -445,7 +482,11 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запрашивает выбор даты"""
     # Создаем кнопки с датами: сегодня, завтра, послезавтра
-    now = datetime.now()
+    try:
+        tz = pytz.timezone(TIMEZONE)
+    except pytz.exceptions.UnknownTimeZoneError:
+        tz = pytz.UTC
+    now = datetime.now(tz)
     dates = []
 
     for i in range(3):
@@ -474,16 +515,23 @@ async def ask_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Создаем кнопки с временем
     times = [
         ["🌅 06:00"],
+        ["🌅 06:30"],
         ["🌅 07:00"],
+        ["🌅 07:30"],
         ["☀️ 08:00"],
+        ["☀️ 08:30"],
         ["☀️ 09:00"],
+        ["☀️ 09:30"],
         ["☀️ 10:00"],
+        ["☀️ 10:30"],
         ["🌞 11:00"],
+        ["🌞 11:30"],
         ["🌞 12:00"],
-        ["🌞 13:00"],
-        ["🌆 14:00"],
-        ["🌆 15:00"],
-        ["🌙 16:00"],
+        ["🌆 18:00"],
+        ["🌆 18:30"],
+        ["🌆 19:00"],
+        ["🌆 19:30"],
+        ["🌙 20:00"],
         ["❌ Отмена"]
     ]
 
@@ -508,7 +556,11 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     # Извлекаем дату из текста кнопки
-    now = datetime.now()
+    try:
+        tz = pytz.timezone(TIMEZONE)
+    except pytz.exceptions.UnknownTimeZoneError:
+        tz = pytz.UTC
+    now = datetime.now(tz)
     selected_date = None
 
     # Проверяем, является ли текст датой в формате ДД.ММ
@@ -590,16 +642,23 @@ async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TY
         # Проверяем кнопки с временем
         time_buttons = {
             "🌅 06:00": "06:00",
+            "🌅 06:30": "06:30",
             "🌅 07:00": "07:00",
+            "🌅 07:30": "07:30",
             "☀️ 08:00": "08:00",
+            "☀️ 08:30": "08:30",
             "☀️ 09:00": "09:00",
+            "☀️ 09:30": "09:30",
             "☀️ 10:00": "10:00",
+            "☀️ 10:30": "10:30",
             "🌞 11:00": "11:00",
+            "🌞 11:30": "11:30",
             "🌞 12:00": "12:00",
-            "🌞 13:00": "13:00",
-            "🌆 14:00": "14:00",
-            "🌆 15:00": "15:00",
-            "🌙 16:00": "16:00"
+            "🌆 18:00": "18:00",
+            "🌆 18:30": "18:30",
+            "🌆 19:00": "19:00",
+            "🌆 19:30": "19:30",
+            "🌙 20:00": "20:00"
         }
 
         if text in time_buttons:
@@ -621,16 +680,29 @@ async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     # Создаем полный datetime
-    selected_datetime = datetime.combine(selected_date, selected_time)
+    selected_datetime_naive = datetime.combine(selected_date, selected_time)
 
-    # Валидируем дату (не в прошлом)
-    now = datetime.now()
-    if selected_datetime < now:
+    # Получаем временную зону и создаем timezone-aware datetime
+    try:
+        tz = pytz.timezone(TIMEZONE)
+    except pytz.exceptions.UnknownTimeZoneError:
+        tz = pytz.UTC
+    selected_datetime = tz.localize(selected_datetime_naive)
+
+    # Валидируем дату и время (не в прошлом)
+    now = datetime.now(tz)
+    if selected_datetime.date() < now.date():
         await update.message.reply_text(
             "❌ <b>Указанная дата уже прошла!</b> Выбери будущую дату.",
             parse_mode='HTML'
         )
         return ASK_DATE
+    elif selected_datetime.date() == now.date() and selected_datetime.time() <= now.time():
+        await update.message.reply_text(
+            "❌ <b>Указанное время уже прошло!</b> Выбери время в будущем.",
+            parse_mode='HTML'
+        )
+        return ASK_TIME
 
     # Сохраняем дату и время
     date_time_str = selected_datetime.strftime('%d.%m %H:%M')
@@ -946,12 +1018,16 @@ async def ask_start_point(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('edit_mode'):
             context.user_data['edit_mode'] = False
             return await preview_step(update, context)
-        keyboard = [[p] for p in PACE_OPTIONS]
+
+        # Переходим к выбору точки финиша
+        keyboard = [[p['name']] for p in FINISH_POINTS]
+        keyboard.insert(0, ["🏁 Не нужно"])  # Добавляем опцию "Не нужно" в начало
         await update.message.reply_text(
-            'Выбери ожидаемый темп (количество лун):',
+            f"Маршрут: {context.user_data['length_km']} км, набор: {context.user_data['uphill']} м\n\n"
+            f"Укажи точку финиша или выбери '🏁 Не нужно':",
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
-        return ASK_PACE
+        return ASK_FINISH_POINT
 
 async def ask_start_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если не было имени, значит сейчас ждём имя, иначе ждём ссылку
@@ -975,6 +1051,85 @@ async def ask_start_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('edit_mode'):
             context.user_data['edit_mode'] = False
             return await preview_step(update, context)
+
+        # Переходим к выбору точки финиша
+        keyboard = [[p['name']] for p in FINISH_POINTS]
+        keyboard.insert(0, ["🏁 Не нужно"])  # Добавляем опцию "Не нужно" в начало
+        await update.message.reply_text(
+            f"Маршрут: {context.user_data['length_km']} км, набор: {context.user_data['uphill']} м\n\n"
+            f"Укажи точку финиша или выбери '🏁 Не нужно':",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_FINISH_POINT
+
+async def ask_finish_point(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    point_name = update.message.text.strip()
+
+    # Обработка опции "Не нужно"
+    if point_name == "🏁 Не нужно":
+        context.user_data['finish_point_name'] = None
+        context.user_data['finish_point_link'] = None
+
+        # Проверяем режим редактирования
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
+
+        # Переходим к выбору темпа
+        keyboard = [[p] for p in PACE_OPTIONS]
+        await update.message.reply_text(
+            'Выбери ожидаемый темп (количество лун):',
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_PACE
+
+    # Поиск точки в списке FINISH_POINTS
+    point = next((p for p in FINISH_POINTS if p['name'] == point_name), None)
+    if not point:
+        await update.message.reply_text('Пожалуйста, выбери точку финиша из списка.')
+        return ASK_FINISH_POINT
+
+    if point['name'] == 'Своя точка':
+        context.user_data['finish_point_name'] = None
+        context.user_data['finish_point_link'] = None
+        await update.message.reply_text('Введи название своей точки финиша:')
+        return ASK_FINISH_LINK
+    else:
+        context.user_data['finish_point_name'] = point['name']
+        context.user_data['finish_point_link'] = point['link']
+
+        # Проверяем режим редактирования
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
+
+        # Переходим к выбору темпа
+        keyboard = [[p] for p in PACE_OPTIONS]
+        await update.message.reply_text(
+            'Выбери ожидаемый темп (количество лун):',
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_PACE
+
+async def ask_finish_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Если не было имени, значит сейчас ждём имя, иначе ждём ссылку
+    if not context.user_data.get('finish_point_name'):
+        context.user_data['finish_point_name'] = update.message.text.strip()
+        await update.message.reply_text('Введи ссылку на Google Maps для своей точки финиша:')
+        return ASK_FINISH_LINK
+    else:
+        link = update.message.text.strip()
+        if not (link.startswith('http://') or link.startswith('https://')):
+            await update.message.reply_text('Пожалуйста, пришли корректную ссылку на Google Maps (начинается с http...)')
+            return ASK_FINISH_LINK
+        context.user_data['finish_point_link'] = link
+
+        # Проверяем режим редактирования
+        if context.user_data.get('edit_mode'):
+            context.user_data['edit_mode'] = False
+            return await preview_step(update, context)
+
+        # Переходим к выбору темпа
         keyboard = [[p] for p in PACE_OPTIONS]
         await update.message.reply_text(
             'Выбери ожидаемый темп (количество лун):',
@@ -1025,12 +1180,17 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['edit_mode'] = False
         return await preview_step(update, context)
 
-    # В обычном потоке после комментариев предлагаем добавить картинку
+    # В обычном потоке после комментариев предлагаем добавить картинку или дашборд
     await update.message.reply_text(
         "📷 <b>Хотите добавить картинку к анонсу?</b>\n\n"
-        "Пришлите картинку или нажмите 'Пропустить':",
+        "Вы можете:\n"
+        "• Прислать свою картинку\n"
+        "• Сгенерировать <b>дашборд погоды</b> для маршрута\n"
+        "• Или пропустить этот шаг",
         parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup([
+            ["🌤️ Сгенерировать дашборд погоды"],
+            ["📷 Прислать картинку"],
             ["⏭️ Пропустить"],
             ["❌ Отмена"]
         ], one_time_keyboard=True, resize_keyboard=True)
@@ -1073,6 +1233,58 @@ async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    if text == "🌤️ Сгенерировать дашборд погоды":
+        # Генерируем дашборд погоды
+        gpx_path = context.user_data.get('gpx_path')
+        parsed_datetime = context.user_data.get('parsed_datetime')
+
+        if not gpx_path or not parsed_datetime:
+            await update.message.reply_text(
+                "❌ <b>Ошибка:</b> Не найден GPX файл или время старта",
+                parse_mode='HTML'
+            )
+            return await preview_step(update, context)
+
+        await update.message.reply_text(
+            "🌤️ <b>Генерирую дашборд погоды...</b>\n\n"
+            "Это может занять 1-2 минуты ⏳",
+            parse_mode='HTML'
+        )
+
+        # Генерируем дашборд
+        dashboard_path = f"dashboard_{context.user_data.get('tour_id', 'temp')}.png"
+        success = generate_weather_dashboard(gpx_path, parsed_datetime, dashboard_path)
+
+        if success:
+            # Сохраняем путь к дашборду
+            context.user_data['dashboard_path'] = dashboard_path
+            await update.message.reply_text(
+                "✅ <b>Дашборд погоды успешно сгенерирован!</b>\n\n"
+                "Он будет использован в анонсе вместо обычной картинки.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                "❌ <b>Не удалось сгенерировать дашборд погоды</b>\n\n"
+                "Возможно, проблемы с интернетом или данными.\n"
+                "Продолжаем без дашборда.",
+                parse_mode='HTML'
+            )
+
+        return await preview_step(update, context)
+
+    if text == "📷 Прислать картинку":
+        await update.message.reply_text(
+            "📷 <b>Пришлите картинку для анонса</b>\n\n"
+            "Или отправьте команду:",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["⏭️ Пропустить"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_IMAGE
+
     if text == "⏭️ Пропустить":
         # Пропускаем добавление картинки, переходим к предпросмотру
         return await preview_step(update, context)
@@ -1101,6 +1313,10 @@ async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ASK_IMAGE
 
+    if text == "⏭️ Оставить дашборд":
+        # Возвращаемся к предпросмотру, оставляя дашборд
+        return await preview_step(update, context)
+
     # Если пришел неизвестный текст
     # Проверяем режим редактирования
     if context.user_data.get('edit_mode'):
@@ -1108,6 +1324,15 @@ async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Пожалуйста, пришлите картинку или выберите действие из кнопок ниже:",
             reply_markup=ReplyKeyboardMarkup([
                 ["🗑️ Удалить картинку"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+    elif context.user_data.get('dashboard_path'):
+        # Если есть дашборд, показываем опции для замены
+        await update.message.reply_text(
+            "❌ Пожалуйста, пришлите картинку или выберите действие из кнопок ниже:",
+            reply_markup=ReplyKeyboardMarkup([
+                ["⏭️ Оставить дашборд"],
                 ["❌ Отмена"]
             ], one_time_keyboard=True, resize_keyboard=True)
         )
@@ -1142,40 +1367,71 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     route_name = context.user_data.get('route_name', '-')
     start_point_name = context.user_data.get('start_point_name', '-')
     start_point_link = context.user_data.get('start_point_link', '-')
+    finish_point_name = context.user_data.get('finish_point_name')
+    finish_point_link = context.user_data.get('finish_point_link')
     length_km = context.user_data.get('length_km', '-')
     uphill = context.user_data.get('uphill', '-')
     pace = context.user_data.get('pace', '-')
     comment = context.user_data.get('comment', '-')
     gpx_path = context.user_data.get('gpx_path', None)
     pace_emoji = pace.split(' ')[0] if pace else '-'
-    announce = (
-        f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>\n"
-        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)\n\n"
-        f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
-        f"Ожидаемый темп: {pace_emoji}\n"
-        f"\n"
-        f"{comment}\n\n"
-        f"Ставьте реакцию если собираетесь поехать"
-    )
+    # Формируем текст анонса
+    announce_lines = [
+        f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
+        "",
+        f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+    ]
+
+    # Добавляем финиш, если он указан
+    if finish_point_name and finish_point_link:
+        announce_lines.append(f"Финиш: <a href=\"{finish_point_link}\">{finish_point_name}</a>")
+    elif finish_point_name:
+        announce_lines.append(f"Финиш: {finish_point_name}")
+
+    announce_lines.extend([
+        f"Ожидаемый темп: {pace_emoji}",
+        "",
+        comment,
+        "",
+        "Ставьте реакцию если собираетесь поехать"
+    ])
+
+    announce = "\n".join(announce_lines)
     # Кнопки предпросмотра
     buttons = [["✅ Отправить"]]
 
-    # Добавляем кнопки для управления картинкой
+    # Добавляем кнопки для управления картинкой или дашбордом
     announce_image = context.user_data.get('announce_image')
+    dashboard_path = context.user_data.get('dashboard_path')
+
     if announce_image:
         buttons.append(["🗑️ Удалить картинку"])
+    elif dashboard_path and os.path.exists(dashboard_path):
+        buttons.append(["🗑️ Удалить дашборд"])
+        buttons.append(["📷 Заменить картинкой"])
     else:
         buttons.append(["📷 Добавить картинку"])
+        buttons.append(["🌤️ Сгенерировать дашборд"])
 
     for step, name in STEP_TO_NAME.items():
         buttons.append([name])
 
-    # Проверяем, есть ли картинка для анонса
+    # Проверяем, есть ли картинка или дашборд для анонса
+    dashboard_path = context.user_data.get('dashboard_path')
     if announce_image:
         # Отправляем картинку с caption
         await update.message.reply_photo(
             photo=announce_image,
             caption=announce + '\n\nВсё верно?',
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+        )
+    elif dashboard_path and os.path.exists(dashboard_path):
+        # Отправляем дашборд погоды как картинку
+        await update.message.reply_photo(
+            photo=open(dashboard_path, 'rb'),
+            caption=announce + '\n\n🌤️ <b>Дашборд погоды сгенерирован автоматически</b>\n\nВсё верно?',
             parse_mode='HTML',
             reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
         )
@@ -1213,29 +1469,55 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         route_name = context.user_data.get('route_name', '-')
         start_point_name = context.user_data.get('start_point_name', '-')
         start_point_link = context.user_data.get('start_point_link', '-')
+        finish_point_name = context.user_data.get('finish_point_name')
+        finish_point_link = context.user_data.get('finish_point_link')
         length_km = context.user_data.get('length_km', '-')
         uphill = context.user_data.get('uphill', '-')
         pace = context.user_data.get('pace', '-')
         comment = context.user_data.get('comment', '-')
         gpx_path = context.user_data.get('gpx_path', None)
         pace_emoji = pace.split(' ')[0] if pace else '-'
-        announce = (
-            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>\n"
-            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)\n\n"
-            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}\n"
-            f"Ожидаемый темп: {pace_emoji}\n"
-            f"\n"
-            f"{comment}\n\n"
-            f"Ставьте реакцию если собираетесь поехать"
-        )
 
-        # Проверяем, есть ли картинка для анонса
+        # Формируем текст анонса
+        announce_lines = [
+            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
+            "",
+            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+        ]
+
+        # Добавляем финиш, если он указан
+        if finish_point_name and finish_point_link:
+            announce_lines.append(f"Финиш: <a href=\"{finish_point_link}\">{finish_point_name}</a>")
+        elif finish_point_name:
+            announce_lines.append(f"Финиш: {finish_point_name}")
+
+        announce_lines.extend([
+            f"Ожидаемый темп: {pace_emoji}",
+            "",
+            comment,
+            "",
+            "Ставьте реакцию если собираетесь поехать"
+        ])
+
+        announce = "\n".join(announce_lines)
+
+        # Проверяем, есть ли картинка или дашборд для анонса
         announce_image = context.user_data.get('announce_image')
+        dashboard_path = context.user_data.get('dashboard_path')
+
         if announce_image:
             # Отправляем картинку с caption
             await update.message.reply_photo(
                 photo=announce_image,
                 caption=announce,
+                parse_mode='HTML'
+            )
+        elif dashboard_path and os.path.exists(dashboard_path):
+            # Отправляем дашборд погоды как картинку
+            await update.message.reply_photo(
+                photo=open(dashboard_path, 'rb'),
+                caption=announce + '\n\n🌤️ <b>Дашборд погоды сгенерирован автоматически</b>',
                 parse_mode='HTML'
             )
         else:
@@ -1256,7 +1538,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         return ConversationHandler.END
 
-    # Обработка кнопок управления картинкой
+    # Обработка кнопок управления картинкой и дашбордом
     if text == "📷 Добавить картинку":
         await update.message.reply_text(
             "📷 <b>Пришлите картинку для анонса</b>\n\n"
@@ -1276,6 +1558,72 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
         return await preview_step(update, context)
+
+    if text == "🌤️ Сгенерировать дашборд":
+        # Генерируем дашборд погоды
+        gpx_path = context.user_data.get('gpx_path')
+        parsed_datetime = context.user_data.get('parsed_datetime')
+
+        if not gpx_path or not parsed_datetime:
+            await update.message.reply_text(
+                "❌ <b>Ошибка:</b> Не найден GPX файл или время старта",
+                parse_mode='HTML'
+            )
+            return await preview_step(update, context)
+
+        await update.message.reply_text(
+            "🌤️ <b>Генерирую дашборд погоды...</b>\n\n"
+            "Это может занять 1-2 минуты ⏳",
+            parse_mode='HTML'
+        )
+
+        # Генерируем дашборд
+        dashboard_path = f"dashboard_{context.user_data.get('tour_id', 'temp')}.png"
+        success = generate_weather_dashboard(gpx_path, parsed_datetime, dashboard_path)
+
+        if success:
+            # Сохраняем путь к дашборду
+            context.user_data['dashboard_path'] = dashboard_path
+            await update.message.reply_text(
+                "✅ <b>Дашборд погоды успешно сгенерирован!</b>\n\n"
+                "Он будет использован в анонсе вместо обычной картинки.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                "❌ <b>Не удалось сгенерировать дашборд погоды</b>\n\n"
+                "Возможно, проблемы с интернетом или данными.\n"
+                "Продолжаем без дашборда.",
+                parse_mode='HTML'
+            )
+
+        return await preview_step(update, context)
+
+    if text == "🗑️ Удалить дашборд":
+        dashboard_path = context.user_data.get('dashboard_path')
+        if dashboard_path and os.path.exists(dashboard_path):
+            try:
+                os.remove(dashboard_path)
+            except:
+                pass
+        context.user_data['dashboard_path'] = None
+        await update.message.reply_text(
+            "✅ <b>Дашборд удален из анонса!</b>",
+            parse_mode='HTML'
+        )
+        return await preview_step(update, context)
+
+    if text == "📷 Заменить картинкой":
+        await update.message.reply_text(
+            "📷 <b>Пришлите картинку для замены дашборда</b>\n\n"
+            "Или отправьте команду:",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["⏭️ Оставить дашборд"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+        return ASK_IMAGE
 
     # Если выбрана кнопка редактирования — возвращаем на нужный этап
     for step, name in STEP_TO_NAME.items():
@@ -1309,6 +1657,15 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = [[p['name']] for p in START_POINTS]
                 await update.message.reply_text('Выбери точку старта:', reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
                 return ASK_START_POINT
+            elif step == ASK_FINISH_POINT:
+                keyboard = [[p['name']] for p in FINISH_POINTS]
+                keyboard.insert(0, ["🏁 Не нужно"])  # Добавляем опцию "Не нужно" в начало
+                await update.message.reply_text(
+                    f"Маршрут: {context.user_data['length_km']} км, набор: {context.user_data['uphill']} м\n\n"
+                    f"Укажи точку финиша или выбери '🏁 Не нужно':",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                )
+                return ASK_FINISH_POINT
             elif step == ASK_PACE:
                 keyboard = [[p] for p in PACE_OPTIONS]
                 await update.message.reply_text('Выбери ожидаемый темп (количество лун):', reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
@@ -1354,8 +1711,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_text = f"🤖 <b>Статус бота</b>\n\n"
     status_text += f"📁 Файлов в кэше: {cache_size}\n"
     status_text += f"💾 Размер кэша: {total_size / 1024:.1f} KB\n"
-    status_text += f"⏰ Время: {datetime.now().strftime('%H:%M:%S')}\n"
-    status_text += f"📅 Дата: {datetime.now().strftime('%d.%m.%Y')}\n"
+    try:
+        tz = pytz.timezone(TIMEZONE)
+    except pytz.exceptions.UnknownTimeZoneError:
+        tz = pytz.UTC
+    now = datetime.now(tz)
+    status_text += f"⏰ Время ({TIMEZONE}): {now.strftime('%H:%M:%S')}\n"
+    status_text += f"📅 Дата ({TIMEZONE}): {now.strftime('%d.%m.%Y')}\n"
     
     if cache_size > 10:
         status_text += "\n⚠️ Много файлов в кэше! Используй /clear_cache"
@@ -1371,25 +1733,60 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def cleanup_old_gpx_files():
     """Автоматически очищает GPX файлы старше 180 дней"""
     try:
-        current_time = datetime.now()
+        try:
+            tz = pytz.timezone(TIMEZONE)
+        except pytz.exceptions.UnknownTimeZoneError:
+            tz = pytz.UTC
+        current_time = datetime.now(tz)
         cache_files = glob.glob(f"{CACHE_DIR}/*.gpx")
         deleted_count = 0
-        
+
         for file_path in cache_files:
             try:
                 file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                if (current_time - file_time).days > 180:
+                # Создаем timezone-aware datetime для файла
+                file_time_tz = tz.localize(file_time.replace(tzinfo=None))
+                if (current_time - file_time_tz).days > 180:
                     os.remove(file_path)
                     logger.info(f"Автоматически удален старый файл: {file_path}")
                     deleted_count += 1
             except Exception as e:
                 logger.error(f"Ошибка при проверке файла {file_path}: {e}")
-        
+
         if deleted_count > 0:
             logger.info(f"Автоматически очищено {deleted_count} старых GPX файлов")
-            
+
     except Exception as e:
         logger.error(f"Ошибка при автоматической очистке: {e}")
+
+def cleanup_old_dashboards():
+    """Автоматически очищает дашборды старше 180 дней"""
+    try:
+        try:
+            tz = pytz.timezone(TIMEZONE)
+        except pytz.exceptions.UnknownTimeZoneError:
+            tz = pytz.UTC
+        current_time = datetime.now(tz)
+        dashboard_files = glob.glob("dashboard_*.png")
+        deleted_count = 0
+
+        for file_path in dashboard_files:
+            try:
+                file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                # Создаем timezone-aware datetime для файла
+                file_time_tz = tz.localize(file_time.replace(tzinfo=None))
+                if (current_time - file_time_tz).days > 180:
+                    os.remove(file_path)
+                    logger.info(f"Автоматически удален старый дашборд: {file_path}")
+                    deleted_count += 1
+            except Exception as e:
+                logger.error(f"Ошибка при проверке дашборда {file_path}: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"Автоматически очищено {deleted_count} старых дашбордов")
+
+    except Exception as e:
+        logger.error(f"Ошибка при автоматической очистке дашбордов: {e}")
 
 async def preload_ready_routes():
     """Предварительно загружает все готовые маршруты в кеш"""
@@ -1444,7 +1841,7 @@ async def preload_ready_routes():
 def preload_ready_routes_sync():
     """Синхронная версия предзагрузки готовых маршрутов для запуска при старте"""
     logger.info("Начинаю синхронную предзагрузку готовых маршрутов в кеш...")
-    
+
     for route in ROUTE_COMMENTS:
         try:
             # Извлекаем tour_id из ссылки
@@ -1452,18 +1849,18 @@ def preload_ready_routes_sync():
             if not match:
                 logger.warning(f"Не удалось извлечь tour_id из ссылки: {route['link']}")
                 continue
-                
+
             tour_id = match.group(3)
             route_name = route['name']
-            
+
             # Проверяем, есть ли уже файл в кеше
             gpx_files = glob.glob(f"{CACHE_DIR}/*-{tour_id}.gpx")
             if gpx_files:
                 logger.info(f"Маршрут '{route_name}' уже в кеше, пропускаю")
                 continue
-            
+
             logger.info(f"Загружаю маршрут '{route_name}' (tour_id: {tour_id})")
-            
+
             # Скачиваем GPX синхронно
             import subprocess
             try:
@@ -1473,22 +1870,372 @@ def preload_ready_routes_sync():
                     text=True,
                     timeout=60
                 )
-                
+
                 if result.returncode == 0:
                     logger.info(f"✅ Маршрут '{route_name}' успешно загружен в кеш")
                 else:
                     logger.error(f"❌ Ошибка при загрузке маршрута '{route_name}': {result.stderr}")
-                    
+
             except subprocess.TimeoutExpired:
                 logger.warning(f"⏰ Таймаут при загрузке маршрута '{route_name}'")
             except FileNotFoundError:
                 logger.error(f"❌ komootgpx не найден в системе")
                 break
-                
+
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка при загрузке маршрута '{route.get('name', 'Unknown')}': {e}")
-    
+
     logger.info("Синхронная предзагрузка готовых маршрутов завершена")
+
+# Функции для генерации дашборда погоды
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Вычисляет расстояние между двумя точками в метрах (формула Haversine)"""
+    R = 6371000  # Радиус Земли в метрах
+
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+
+    a = (math.sin(delta_lat / 2) ** 2 +
+         math.cos(lat1_rad) * math.cos(lat2_rad) *
+         math.sin(delta_lon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+def get_route_points_with_time(gpx_file):
+    """Получает точки маршрута с временными метками"""
+    with open(gpx_file, 'r', encoding='utf-8') as f:
+        gpx = gpxpy.parse(f)
+
+    points = []
+    for track in gpx.tracks:
+        for segment in track.segments:
+            for point in segment.points:
+                if point.time:
+                    points.append({
+                        'lat': point.latitude,
+                        'lon': point.longitude,
+                        'time': point.time,
+                        'ele': point.elevation if point.elevation else 0
+                    })
+
+    print(f"📍 Загружено {len(points)} точек маршрута с временными метками")
+    return points
+
+def calculate_route_time_points(points, start_time, speed_kmh=27):
+    """Вычисляет точки маршрута через равные интервалы времени"""
+    if not points:
+        return []
+
+    # Конвертируем скорость в км/ч в м/с
+    speed_ms = speed_kmh * 1000 / 3600
+
+    # Вычисляем общее время маршрута
+    total_distance = 0
+    for i in range(1, len(points)):
+        lat1, lon1 = points[i-1]['lat'], points[i-1]['lon']
+        lat2, lon2 = points[i]['lat'], points[i]['lon']
+        distance = calculate_distance(lat1, lon1, lat2, lon2)
+        total_distance += distance
+
+    print(f"📏 Общая дистанция: {total_distance/1000:.2f} км")
+    print(f"⏱️  Время маршрута: {total_distance/speed_ms/3600:.2f} часов")
+
+    # Разбиваем маршрут на интервалы по 6 км каждый
+    interval_distance_km = 6.0  # 6 км между точками
+    num_intervals = max(1, int(total_distance / 1000 / interval_distance_km))
+
+    route_points = []
+    for i in range(num_intervals):
+        target_distance = (i + 1) * interval_distance_km * 1000  # в метрах
+
+        # Находим точку на нужном расстоянии
+        accumulated_distance = 0
+        for j in range(1, len(points)):
+            lat1, lon1 = points[j-1]['lat'], points[j-1]['lon']
+            lat2, lon2 = points[j]['lat'], points[j]['lon']
+            segment_distance = calculate_distance(lat1, lon1, lat2, lon2)
+
+            if accumulated_distance + segment_distance >= target_distance:
+                # Интерполируем точку на сегменте
+                ratio = (target_distance - accumulated_distance) / segment_distance
+                lat = lat1 + (lat2 - lat1) * ratio
+                lon = lon1 + (lon2 - lon1) * ratio
+
+                # Вычисляем время для этой точки
+                time_offset = target_distance / speed_ms
+                point_time = start_time + timedelta(seconds=time_offset)
+
+                # Находим высоту для этой точки (интерполируем)
+                ele = 0
+                if j > 0 and j < len(points):
+                    ele1 = points[j-1]['ele'] if 'ele' in points[j-1] else 0
+                    ele2 = points[j]['ele'] if 'ele' in points[j] else 0
+                    ele = ele1 + (ele2 - ele1) * ratio
+
+                route_points.append({
+                    'lat': lat,
+                    'lon': lon,
+                    'time': point_time,
+                    'distance_km': target_distance / 1000,
+                    'ele': ele
+                })
+                break
+
+            accumulated_distance += segment_distance
+
+    return route_points
+
+def get_weather_data_for_route(route_points):
+    """Получает данные о погоде для всех точек маршрута"""
+    cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
+    retry_session = retry(cache_session, retries=3, backoff_factor=0.2)
+    openmeteo = openmeteo_requests.Client(session=retry_session)
+
+    weather_data = []
+
+    for i, point in enumerate(route_points):
+        print(f"🌪️  Получение данных о погоде {i+1}/{len(route_points)}...")
+
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": point['lat'],
+            "longitude": point['lon'],
+            "hourly": [
+                "temperature_2m",
+                "apparent_temperature",
+                "relative_humidity_2m",
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "pressure_msl",
+                "weather_code",
+                "precipitation_probability",
+                "cloud_cover"
+            ],
+            "timezone": "auto",
+            "forecast_days": 2
+        }
+
+        try:
+            responses = openmeteo.weather_api(url, params=params)
+            response = responses[0]
+
+            hourly = response.Hourly()
+            hourly_time = range(hourly.Time(), hourly.TimeEnd(), hourly.Interval())
+
+            # Находим ближайший час
+            target_timestamp = int(point['time'].timestamp())
+            closest_time = None
+            min_diff = float('inf')
+
+            for j, timestamp in enumerate(hourly_time):
+                time_diff = abs(timestamp - target_timestamp)
+                if time_diff < min_diff:
+                    min_diff = time_diff
+                    closest_time = j
+
+            if closest_time is None:
+                weather_data.append(None)
+                continue
+
+            # Получаем данные для найденного времени
+            hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
+            hourly_apparent_temperature = hourly.Variables(1).ValuesAsNumpy()
+            hourly_relative_humidity_2m = hourly.Variables(2).ValuesAsNumpy()
+            hourly_wind_speed_10m = hourly.Variables(3).ValuesAsNumpy()
+            hourly_wind_direction_10m = hourly.Variables(4).ValuesAsNumpy()
+            hourly_pressure_msl = hourly.Variables(5).ValuesAsNumpy()
+            hourly_weather_code = hourly.Variables(6).ValuesAsNumpy()
+            hourly_precipitation_probability = hourly.Variables(7).ValuesAsNumpy()
+            hourly_cloud_cover = hourly.Variables(8).ValuesAsNumpy()
+
+            weather_data.append({
+                'time': point['time'],
+                'distance_km': point['distance_km'],
+                'temperature': hourly_temperature_2m[closest_time],
+                'feels_like': hourly_apparent_temperature[closest_time],
+                'humidity': hourly_relative_humidity_2m[closest_time],
+                'wind_speed': hourly_wind_speed_10m[closest_time],
+                'wind_direction': hourly_wind_direction_10m[closest_time],
+                'pressure': hourly_pressure_msl[closest_time],
+                'weather_code': int(hourly_weather_code[closest_time]),
+                'precipitation_probability': hourly_precipitation_probability[closest_time],
+                'cloud_cover': hourly_cloud_cover[closest_time]
+            })
+
+        except Exception as e:
+            print(f"❌ Ошибка получения данных о погоде: {e}")
+            weather_data.append(None)
+
+    return weather_data
+
+def create_weather_dashboard(route_points, weather_data, output_path="weather_dashboard.png"):
+    """Создает дашборд с графиками погоды"""
+
+    # Настройка стиля matplotlib
+    plt.style.use('default')
+    plt.rcParams.update({
+        'font.size': 32,
+        'axes.titlesize': 36,
+        'axes.labelsize': 32,
+        'xtick.labelsize': 28,
+        'ytick.labelsize': 28,
+        'legend.fontsize': 19,
+        'figure.titlesize': 40
+    })
+    fig = plt.figure(figsize=(16, 10))
+    fig.patch.set_facecolor('white')
+
+    # Фильтруем данные (убираем None)
+    valid_data = [(p, w) for p, w in zip(route_points, weather_data) if w is not None]
+    if not valid_data:
+        print("❌ Нет данных о погоде для создания дашборда")
+        return False
+
+    route_points_clean, weather_data_clean = zip(*valid_data)
+    times = [w['time'] for w in weather_data_clean]
+    distances = [w['distance_km'] for w in weather_data_clean]
+
+    # График 1: Wind (верхний левый)
+    ax1 = plt.subplot(2, 2, 1)
+    wind_speeds = [w['wind_speed'] * 3.6 for w in weather_data_clean]  # м/с в км/ч
+    wind_gusts = [w['wind_speed'] * 3.6 * 1.5 for w in weather_data_clean]  # Примерные порывы
+
+    ax1.plot(times, wind_speeds, color='orange', linewidth=3, label='Wind')
+    ax1.fill_between(times, wind_speeds, wind_gusts, alpha=0.3, color='darkorange', label='Gust')
+    ax1.set_title('Wind (km/h)', fontweight='bold')
+    ax1.set_ylabel('')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, linewidth=1)
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+
+    # График 2: Temperature (верхний правый)
+    ax2 = plt.subplot(2, 2, 2)
+    ax2.plot(times, [w['temperature'] for w in weather_data_clean], color='orange', linewidth=3)
+    ax2.set_title('Temp (°C)', fontweight='bold')
+    ax2.set_ylabel('')
+    ax2.grid(True, alpha=0.3, linewidth=1)
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+
+    # График 3: Wind Direction Map (нижний, растянутый по горизонтали)
+    ax3 = plt.subplot(2, 1, 2)
+
+    # Получаем границы маршрута
+    lats = [p['lat'] for p in route_points_clean]
+    lons = [p['lon'] for p in route_points_clean]
+
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+
+    # Добавляем отступы (адаптивные для коротких маршрутов)
+    lat_range = max_lat - min_lat
+    lon_range = max_lon - min_lon
+
+    # Минимальные отступы для коротких маршрутов
+    min_margin = 0.01  # Минимальный отступ в градусах
+
+    lat_margin = max(lat_range * 0.1, min_margin)
+    lon_margin = max(lon_range * 0.1, min_margin)
+
+    ax3.set_xlim(min_lon - lon_margin, max_lon + lon_margin)
+    ax3.set_ylim(min_lat - lat_margin, max_lat + lat_margin)
+
+    # Рисуем маршрут
+    ax3.plot(lons, lats, 'orange', linewidth=3)
+
+    # Рисуем треугольники ветра
+    for i, (point, weather) in enumerate(zip(route_points_clean, weather_data_clean)):
+        if weather and weather['wind_speed'] > 0:
+            wind_dir_rad = math.radians(weather['wind_direction'])
+
+            # Длина сторон равнобедренного треугольника (компактная)
+            # Фиксированный небольшой размер для всех маршрутов
+            head_length = 0.008  # Фиксированный компактный размер
+            head_angle = math.pi / 6  # 30 градусов
+
+            # Вычисляем перпендикуляр к направлению ветра для треугольника
+            perp_angle = wind_dir_rad + math.pi / 2
+
+            # Левый угол треугольника (симметрично относительно направления ветра)
+            left_lon = point['lon'] - head_length * math.cos(perp_angle - head_angle)
+            left_lat = point['lat'] - head_length * math.sin(perp_angle - head_angle)
+
+            # Правый угол треугольника
+            right_lon = point['lon'] - head_length * math.cos(perp_angle + head_angle)
+            right_lat = point['lat'] - head_length * math.sin(perp_angle + head_angle)
+
+            # Рисуем равнобедренный треугольник с заливкой поверх маршрута
+            ax3.fill([left_lon, point['lon'], right_lon], [left_lat, point['lat'], right_lat],
+                    color='black', alpha=1.0, zorder=10)
+
+            # Добавляем линию от вершины через центр основания и дальше
+            B_lon = point['lon']
+            B_lat = point['lat']
+            H_lon = (left_lon + right_lon) / 2
+            H_lat = (left_lat + right_lat) / 2
+
+            vec_lon = H_lon - B_lon
+            vec_lat = H_lat - B_lat
+
+            magnitude = math.sqrt(vec_lon**2 + vec_lat**2)
+            if magnitude > 0:
+                unit_vec_lon = vec_lon / magnitude
+                unit_vec_lat = vec_lat / magnitude
+
+                tail_length = head_length * 2
+                end_lon = H_lon + unit_vec_lon * tail_length
+                end_lat = H_lat + unit_vec_lat * tail_length
+
+                ax3.plot([B_lon, end_lon], [B_lat, end_lat],
+                        color='black', linewidth=2, solid_capstyle='round', zorder=11)
+
+    # Точки начала и конца (увеличенный размер)
+    marker_size = 12  # Увеличенный размер в 2 раза
+    ax3.plot(lons[0], lats[0], 'go', markersize=marker_size, label='Start')
+    ax3.plot(lons[-1], lats[-1], 'ro', markersize=marker_size, label='End')
+
+    ax3.set_title('Wind Direction', fontweight='bold')
+    ax3.set_xticks([])
+    ax3.set_yticks([])
+    ax3.legend()
+    ax3.grid(False)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+
+    print(f"✅ Дашборд сохранен в: {output_path}")
+    return True
+
+def generate_weather_dashboard(gpx_path, start_datetime, output_path="weather_dashboard.png", speed_kmh=27):
+    """Генерирует дашборд погоды для маршрута"""
+    try:
+        # Получаем точки маршрута
+        points = get_route_points_with_time(gpx_path)
+        if not points:
+            return False
+
+        # Вычисляем точки маршрута через равные интервалы
+        route_points = calculate_route_time_points(points, start_datetime, speed_kmh)
+        if not route_points:
+            return False
+
+        # Получаем данные о погоде
+        weather_data = get_weather_data_for_route(route_points)
+        if not weather_data:
+            return False
+
+        # Создаем дашборд
+        success = create_weather_dashboard(route_points, weather_data, output_path)
+        return success
+
+    except Exception as e:
+        print(f"❌ Ошибка при генерации дашборда: {e}")
+        return False
 
 async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для очистки кэша"""
@@ -1517,12 +2264,22 @@ async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Ошибка при очистке кэша: {str(e)}")
 
 if __name__ == '__main__':
-    # Автоматически очищаем старые GPX файлы при запуске
+    # Логируем информацию о временной зоне
+    try:
+        tz = pytz.timezone(TIMEZONE)
+        logger.info(f"Используемая временная зона: {TIMEZONE}")
+        logger.info(f"Текущее время: {datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    except pytz.exceptions.UnknownTimeZoneError:
+        logger.warning(f"Неизвестная временная зона: {TIMEZONE}, используем UTC")
+        TIMEZONE = 'UTC'
+
+    # Автоматически очищаем старые GPX файлы и дашборды при запуске
     cleanup_old_gpx_files()
-    
+    cleanup_old_dashboards()
+
     # Предварительно загружаем все готовые маршруты в кеш
     preload_ready_routes_sync()
-    
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     # Добавляем команды статуса и очистки кэша
@@ -1544,6 +2301,8 @@ if __name__ == '__main__':
             ASK_ROUTE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_route_name)],
             ASK_START_POINT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_point)],
             ASK_START_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_link)],
+            ASK_FINISH_POINT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_finish_point)],
+            ASK_FINISH_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_finish_link)],
             ASK_PACE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_pace)],
             ASK_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_comment)],
             ASK_IMAGE: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, ask_image)],

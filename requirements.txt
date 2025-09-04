@@ -1,4 +1,19 @@
 python-telegram-bot==22.3
 gpxpy==1.6.2
 python-dotenv==1.1.1
-komootgpx==1.4.2 
+komootgpx==1.4.2
+gpxpy
+Pillow
+requests
+openmeteo-requests
+requests-cache
+retry-requests
+numpy
+pandas
+matplotlib
+
+# Тестирование
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+pytest-cov==4.1.0
