@@ -1189,7 +1189,7 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Или пропустить этот шаг",
         parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup([
-            ["🌤️ Сгенерировать дашборд погоды"],
+            ["🌤️ Сгенерировать дашборд погоды (BETA)"],
             ["📷 Прислать картинку"],
             ["⏭️ Пропустить"],
             ["❌ Отмена"]
@@ -1233,7 +1233,7 @@ async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    if text == "🌤️ Сгенерировать дашборд погоды":
+    if text == "🌤️ Сгенерировать дашборд погоды (BETA)":
         # Генерируем дашборд погоды
         gpx_path = context.user_data.get('gpx_path')
         parsed_datetime = context.user_data.get('parsed_datetime')
@@ -1412,7 +1412,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(["📷 Заменить картинкой"])
     else:
         buttons.append(["📷 Добавить картинку"])
-        buttons.append(["🌤️ Сгенерировать дашборд"])
+        buttons.append(["🌤️ Сгенерировать дашборд (BETA)"])
 
     for step, name in STEP_TO_NAME.items():
         buttons.append([name])
@@ -1559,7 +1559,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await preview_step(update, context)
 
-    if text == "🌤️ Сгенерировать дашборд":
+    if text == "🌤️ Сгенерировать дашборд (BETA)":
         # Генерируем дашборд погоды
         gpx_path = context.user_data.get('gpx_path')
         parsed_datetime = context.user_data.get('parsed_datetime')
