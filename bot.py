@@ -1431,7 +1431,7 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Отправляем дашборд погоды как картинку
         await update.message.reply_photo(
             photo=open(dashboard_path, 'rb'),
-            caption=announce + '\n\n🌤️ <b>Дашборд погоды сгенерирован автоматически</b>\n\nВсё верно?',
+            caption=announce + '\n\nВсё верно?',
             parse_mode='HTML',
             reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
         )
@@ -1517,7 +1517,7 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Отправляем дашборд погоды как картинку
             await update.message.reply_photo(
                 photo=open(dashboard_path, 'rb'),
-                caption=announce + '\n\n🌤️ <b>Дашборд погоды сгенерирован автоматически</b>',
+                caption=announce,
                 parse_mode='HTML'
             )
         else:
