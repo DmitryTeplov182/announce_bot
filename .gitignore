@@ -72,3 +72,7 @@ dashboard_*.png
 
 # Telegram bot
 __pycache__/bot.cpython-*.pyc
+
+.cache.sqlite
+
+*.png
