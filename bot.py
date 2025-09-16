@@ -452,10 +452,10 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Создаем клавиатуру с готовыми ссылками
     keyboard = []
+    keyboard.append(["🚫 Без трека"])
     for route in ROUTE_COMMENTS:
         keyboard.append([f"🔗 {route['name']}"])
 
-    keyboard.append(["🚫 Без трека"])
     keyboard.append(["❌ Отмена"])
 
     await update.message.reply_text(
@@ -752,10 +752,10 @@ async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Создаем клавиатуру с готовыми ссылками
     keyboard = []
+    keyboard.append(["🚫 Без трека"])
     for route in ROUTE_COMMENTS:
         keyboard.append([f"🔗 {route['name']}"])
 
-    keyboard.append(["🚫 Без трека"])
     keyboard.append(["❌ Отмена"])
 
     await update.message.reply_text(
