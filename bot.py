@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-ASK_DATE, ASK_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_FINISH_POINT, ASK_FINISH_LINK, ASK_PACE, ASK_COMMENT, ASK_IMAGE, PREVIEW_STEP, SELECT_ROUTE = range(14)
+ASK_DATE, ASK_TIME, ASK_KOMOOT_LINK, PROCESS_GPX, ASK_ROUTE_NAME, ASK_START_POINT, ASK_START_LINK, ASK_FINISH_POINT, ASK_FINISH_LINK, ASK_PACE, ASK_COMMENT, ASK_IMAGE, PREVIEW_STEP, SELECT_ROUTE, ASK_MANUAL_ROUTE = range(15)
 
 STEP_TO_NAME = {
     ASK_DATE: '📅 Изм. дату',
@@ -455,16 +455,53 @@ async def ask_date_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for route in ROUTE_COMMENTS:
         keyboard.append([f"🔗 {route['name']}"])
 
+    keyboard.append(["🚫 Без трека"])
     keyboard.append(["❌ Отмена"])
 
     await update.message.reply_text(
         '✅ Дата и время приняты!\n\n'
         'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
-        'Или выбери готовый маршрут:',
+        'Или выбери готовый маршрут:\n'
+        '• 🚫 <b>Без трека</b> - если плана маршрута нет',
         parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return ASK_KOMOOT_LINK
+
+async def ask_manual_route(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает ввод описания маршрута вручную"""
+    text = update.message.text.strip()
+    
+    if not text or len(text) < 1:
+        await update.message.reply_text(
+            "❌ <b>Описание не может быть пустым!</b>\n\n"
+            "Пожалуйста, опиши маршрут:\n"
+            "• Куда планируете ехать\n"
+            "• Примерное расстояние\n"
+            "• Набор высоты\n"
+            "• Особенности маршрута",
+            parse_mode='HTML'
+        )
+        return ASK_MANUAL_ROUTE
+    
+    # Сохраняем описание маршрута
+    context.user_data['manual_route_description'] = text
+    context.user_data['route_name'] = "Маршрут без трека"
+    
+    await update.message.reply_text(
+        f"✅ <b>Описание маршрута принято:</b>\n\n"
+        f"<i>{text}</i>\n\n"
+        f"Теперь выбери точку старта:",
+        parse_mode='HTML'
+    )
+    
+    # Переходим к выбору точки старта
+    keyboard = [[p['name']] for p in START_POINTS]
+    await update.message.reply_text(
+        "Выбери точку старта:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return ASK_START_POINT
 
 async def ask_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запрашивает выбор даты"""
@@ -718,12 +755,14 @@ async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TY
     for route in ROUTE_COMMENTS:
         keyboard.append([f"🔗 {route['name']}"])
 
+    keyboard.append(["🚫 Без трека"])
     keyboard.append(["❌ Отмена"])
 
     await update.message.reply_text(
         f'✅ Дата и время приняты: <b>{date_time_str}</b>\n\n'
         'Теперь пришли <b>публичную</b> ссылку на маршрут Komoot\n\n'
-        'Или выбери готовый маршрут:',
+        'Или выбери готовый маршрут:\n'
+        '• 🚫 <b>Без трека</b> - если плана маршрута нет',
         parse_mode='HTML',
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
@@ -762,6 +801,29 @@ async def ask_komoot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardRemove()
             )
             return ASK_KOMOOT_LINK
+    
+    # Проверяем, выбрана ли опция "Без трека"
+    if text == "🚫 Без трека":
+        logger.info("Пользователь выбрал 'Без трека'")
+        context.user_data['no_track'] = True
+        context.user_data['komoot_link'] = None
+        context.user_data['tour_id'] = None
+        context.user_data['gpx_path'] = None
+        context.user_data['length_km'] = None
+        context.user_data['uphill'] = None
+        
+        await update.message.reply_text(
+            "🚫 <b>Создаем анонс без трека</b>\n\n"
+            "Опиши маршрут в свободной форме:\n"
+            "• Куда планируете ехать\n"
+            "• Примерное расстояние\n"
+            "• Набор высоты\n"
+            "• Особенности маршрута\n\n"
+            "Например: <i>Едем в сторону Нового Сада, примерно 50 км, набор 200м, по асфальту</i>",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ASK_MANUAL_ROUTE
     
     # Проверяем отмену
     if text == "❌ Отмена":
@@ -1168,20 +1230,38 @@ async def ask_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await preview_step(update, context)
 
     # В обычном потоке после комментариев предлагаем добавить картинку или дашборд
-    await update.message.reply_text(
-        "📷 <b>Хотите добавить картинку к анонсу?</b>\n\n"
-        "Вы можете:\n"
-        "• Прислать свою картинку\n"
-        "• Сгенерировать <b>дашборд погоды</b> для маршрута\n"
-        "• Или пропустить этот шаг",
-        parse_mode='HTML',
-        reply_markup=ReplyKeyboardMarkup([
-            ["🌤️ Сгенерировать дашборд погоды (BETA)"],
-            ["📷 Прислать картинку"],
-            ["⏭️ Пропустить"],
-            ["❌ Отмена"]
-        ], one_time_keyboard=True, resize_keyboard=True)
-    )
+    no_track = context.user_data.get('no_track', False)
+    
+    if no_track:
+        # Для маршрутов без трека предлагаем только картинку
+        await update.message.reply_text(
+            "📷 <b>Хотите добавить картинку к анонсу?</b>\n\n"
+            "Вы можете:\n"
+            "• Прислать свою картинку\n"
+            "• Или пропустить этот шаг",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["📷 Прислать картинку"],
+                ["⏭️ Пропустить"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
+    else:
+        # Для маршрутов с треком предлагаем все опции
+        await update.message.reply_text(
+            "📷 <b>Хотите добавить картинку к анонсу?</b>\n\n"
+            "Вы можете:\n"
+            "• Прислать свою картинку\n"
+            "• Сгенерировать <b>дашборд погоды</b> для маршрута\n"
+            "• Или пропустить этот шаг",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardMarkup([
+                ["🌤️ Сгенерировать дашборд погоды (BETA)"],
+                ["📷 Прислать картинку"],
+                ["⏭️ Пропустить"],
+                ["❌ Отмена"]
+            ], one_time_keyboard=True, resize_keyboard=True)
+        )
     return ASK_IMAGE
 
 async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1363,12 +1443,25 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gpx_path = context.user_data.get('gpx_path', None)
     pace_emoji = pace.split(' ')[0] if pace else '-'
     # Формируем текст анонса
-    announce_lines = [
-        f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
-        f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
-        "",
-        f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
-    ]
+    no_track = context.user_data.get('no_track', False)
+    
+    if no_track:
+        # Для маршрутов без трека используем ручное описание
+        manual_description = context.user_data.get('manual_route_description', 'Маршрут без трека')
+        announce_lines = [
+            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+            f"Маршрут: {manual_description}",
+            "",
+            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+        ]
+    else:
+        # Для маршрутов с треком используем обычную логику
+        announce_lines = [
+            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
+            "",
+            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+        ]
 
     # Добавляем финиш, если он указан
     if finish_point_name and finish_point_link:
@@ -1388,18 +1481,27 @@ async def preview_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Кнопки предпросмотра
     buttons = [["✅ Отправить"]]
 
-    # Добавляем кнопки для управления картинкой или дашбордом
+    # Добавляем кнопки для управления картинкой или дашбордом (только если есть трек)
     announce_image = context.user_data.get('announce_image')
     dashboard_path = context.user_data.get('dashboard_path')
+    no_track = context.user_data.get('no_track', False)
 
-    if announce_image:
-        buttons.append(["🗑️ Удалить картинку"])
-    elif dashboard_path and os.path.exists(dashboard_path):
-        buttons.append(["🗑️ Удалить дашборд"])
-        buttons.append(["📷 Заменить картинкой"])
+    if no_track:
+        # Для маршрутов без трека показываем только картинку
+        if announce_image:
+            buttons.append(["🗑️ Удалить картинку"])
+        else:
+            buttons.append(["📷 Добавить картинку"])
     else:
-        buttons.append(["📷 Добавить картинку"])
-        buttons.append(["🌤️ Сгенерировать дашборд (BETA)"])
+        # Для маршрутов с треком показываем все опции
+        if announce_image:
+            buttons.append(["🗑️ Удалить картинку"])
+        elif dashboard_path and os.path.exists(dashboard_path):
+            buttons.append(["🗑️ Удалить дашборд"])
+            buttons.append(["📷 Заменить картинкой"])
+        else:
+            buttons.append(["📷 Добавить картинку"])
+            buttons.append(["🌤️ Сгенерировать дашборд (BETA)"])
 
     for step, name in STEP_TO_NAME.items():
         buttons.append([name])
@@ -1466,12 +1568,25 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pace_emoji = pace.split(' ')[0] if pace else '-'
 
         # Формируем текст анонса
-        announce_lines = [
-            f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
-            f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
-            "",
-            f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
-        ]
+        no_track = context.user_data.get('no_track', False)
+        
+        if no_track:
+            # Для маршрутов без трека используем ручное описание
+            manual_description = context.user_data.get('manual_route_description', 'Маршрут без трека')
+            announce_lines = [
+                f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+                f"Маршрут: {manual_description}",
+                "",
+                f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+            ]
+        else:
+            # Для маршрутов с треком используем обычную логику
+            announce_lines = [
+                f"<b>{weekday}, {date_part}, {time_of_day} ({time_part})</b>",
+                f"Маршрут: {route_name} ↔️ {length_km} км ⛰ {uphill} м (<a href=\"{komoot_link}\">комут</a>)",
+                "",
+                f"Старт: <a href=\"{start_point_link}\">{start_point_name}</a>, выезд в {time_part}"
+            ]
 
         # Добавляем финиш, если он указан
         if finish_point_name and finish_point_link:
@@ -1510,7 +1625,9 @@ async def preview_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # Отправляем обычное текстовое сообщение
             await update.message.reply_text(announce, parse_mode='HTML', disable_web_page_preview=True)
-        if gpx_path:
+        
+        # Отправляем GPX файл только если есть трек
+        if gpx_path and not no_track:
             with open(gpx_path, 'rb') as f:
                 await update.message.reply_document(f, filename=os.path.basename(gpx_path))
         
@@ -1982,6 +2099,7 @@ if __name__ == '__main__':
             ASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_selection)],
             ASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_selection)],
             ASK_KOMOOT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_komoot_link)],
+            ASK_MANUAL_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_manual_route)],
             ASK_ROUTE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_route_name)],
             ASK_START_POINT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_point)],
             ASK_START_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_start_link)],

@@ -285,9 +285,9 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
     temperatures = [w['temperature'] for w in weather_data_clean]
     feels_like = [w['feels_like'] for w in weather_data_clean]
     
-    ax1.plot(times, temperatures, color='#1f77b4', linewidth=4, label='Temperature (°C)')
-    ax1.plot(times, feels_like, color='#ff7f0e', linewidth=4, label='Feels Like (°C)')
-    ax1.set_title('Temperature', fontweight='bold', color='#333333')
+    ax1.plot(times, temperatures, color='#1f77b4', linewidth=4, label='Температура (°C)')
+    ax1.plot(times, feels_like, color='#ff7f0e', linewidth=4, label='Ощущается (°C)')
+    ax1.set_title('Температура', fontweight='bold', color='#333333')
     ax1.legend(loc='upper left', fontsize=8)
     ax1.grid(True, alpha=0.3, linewidth=0.5)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
@@ -300,17 +300,18 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
     precipitation_prob = [max(0, w['precipitation_probability']) for w in weather_data_clean]  # Убираем отрицательные значения
     cloud_cover = [w['cloud_cover'] for w in weather_data_clean]
     
-    # График осадков (столбчатая диаграмма    ax2.bar(times, precipitation_prob, alpha=0.7, color='#87ceeb', label='Probability (%)', width=0.8, zorder=5)
+    # График осадков (столбчатая диаграмма)
+    ax2.bar(times, precipitation_prob, alpha=0.7, color='#87ceeb', label='Вероятность (%)', width=0.8, zorder=5)
     ax2.set_ylim(0, 100)  # Ограничиваем от 0 до 100%
     ax2.set_xlim(min(times), max(times))  # Ограничиваем ось X только временем заезда
     
     # График облачности (линия на правой оси)
     ax2_twin = ax2.twinx()
-    ax2_twin.plot(times, cloud_cover, color='#808080', linewidth=4, label='Cloud Cover (%)', zorder=1)
+    ax2_twin.plot(times, cloud_cover, color='#808080', linewidth=4, label='Облачность (%)', zorder=1)
     ax2_twin.set_ylim(0, 100)  # Ограничиваем от 0 до 100%
     ax2_twin.set_xlim(min(times), max(times))  # Ограничиваем ось X только временем заезда
     
-    ax2.set_title('Precipitation and Cloud Cover', fontweight='bold', color='#333333')
+    ax2.set_title('Осадки и Облачность', fontweight='bold', color='#333333')
     # Объединяем легенды на одной оси
     lines1, labels1 = ax2.get_legend_handles_labels()
     lines2, labels2 = ax2_twin.get_legend_handles_labels()
@@ -398,7 +399,7 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
     for i, (point, weather) in enumerate(zip(route_points_clean, weather_data_clean)):
         if weather and weather['wind_speed'] > 0:  # Каждая точка с данными о ветре
             wind_dir_rad = math.radians(weather['wind_direction'])
-            wind_speed = weather['wind_speed'] * 3.6  # м/с в км/ч
+            wind_speed = weather['wind_speed']  # м/с
             
             # Адаптивный размер стрелки в зависимости от размера трека
             arrow_length = wind_arrow_scale
@@ -424,10 +425,10 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
                       scale=1, scale_units='xy', angles='xy', width=arrow_scale)
     
     # Точки начала и конца
-    ax3.plot(lons[0], lats[0], 'go', markersize=8, label='Start', zorder=15)
-    ax3.plot(lons[-1], lats[-1], 'ro', markersize=8, label='End', zorder=15)
+    ax3.plot(lons[0], lats[0], 'go', markersize=8, label='Старт', zorder=15)
+    ax3.plot(lons[-1], lats[-1], 'ro', markersize=8, label='Финиш', zorder=15)
     
-    ax3.set_title('Wind Direction', fontweight='bold', color='#333333')
+    ax3.set_title('Направление Ветра', fontweight='bold', color='#333333')
     ax3.set_xticks([])
     ax3.set_yticks([])
     ax3.legend(loc='upper right', fontsize=8, 
@@ -436,10 +437,10 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
     
     # 4. Wind (средний правый)
     ax4 = plt.subplot(3, 2, 4)
-    wind_speeds = [w['wind_speed'] * 3.6 for w in weather_data_clean]  # м/с в км/ч
+    wind_speeds = [w['wind_speed'] for w in weather_data_clean]  # м/с
     
-    ax4.plot(times, wind_speeds, color='#1f77b4', linewidth=4, label='Wind (km/h)')
-    ax4.set_title('Wind', fontweight='bold', color='#333333')
+    ax4.plot(times, wind_speeds, color='#1f77b4', linewidth=4, label='Ветер (м/с)')
+    ax4.set_title('Ветер', fontweight='bold', color='#333333')
     ax4.legend(loc='upper left', fontsize=8, 
               framealpha=0.9, facecolor='white', edgecolor='gray')
     ax4.grid(True, alpha=0.3, linewidth=0.5)
@@ -454,7 +455,7 @@ def create_weather_dashboard(route_points, weather_data, output_path="weather_da
     
     ax5.fill_between(times, elevations, alpha=0.7, color='#ff7f0e')
     ax5.plot(times, elevations, color='#ff6b6b', linewidth=4)
-    ax5.set_title('Elevation', fontweight='bold', color='#333333')
+    ax5.set_title('Высота', fontweight='bold', color='#333333')
     ax5.set_ylim(0, None)  # Минимальное значение высоты = 0
     ax5.grid(True, alpha=0.3, linewidth=0.5)
     ax5.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
