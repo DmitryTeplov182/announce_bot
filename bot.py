@@ -267,6 +267,9 @@ ROUTE_COMMENTS = load_route_comments()
 
 async def quick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для быстрого создания анонса из готового маршрута"""
+    # Очищаем все данные пользователя перед началом новой сессии
+    context.user_data.clear()
+    
     logger.info(f"quick_command вызван, READY_ROUTES: {len(READY_ROUTES)}")
     
     if not READY_ROUTES:
@@ -358,6 +361,9 @@ async def handle_route_selection(update: Update, context: ContextTypes.DEFAULT_T
     return SELECT_ROUTE
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Очищаем все данные пользователя перед началом новой сессии
+    context.user_data.clear()
+    
     # Проверяем, есть ли готовый маршрут в команде
     command_args = update.message.text.split()
     if len(command_args) > 1 and command_args[1].isdigit():
@@ -1796,8 +1802,9 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Очищаем все данные пользователя
     context.user_data.clear()
     await update.message.reply_text(
-        "Состояние сброшено! Начинаем заново.\n\n"
+        "✅ <b>Состояние сброшено!</b> Начинаем заново.\n\n"
         "Используй /start для создания нового анонса.",
+        parse_mode='HTML',
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
